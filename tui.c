@@ -865,8 +865,6 @@ int main() {
                   &resp
               );
               
-              werase(info_bar_win);
-              wprintw(info_bar_win, "%s", gem_site->url);
               if(res) {
                 curs_set(0);
                 form_driver(search_form, REQ_CLR_FIELD);
