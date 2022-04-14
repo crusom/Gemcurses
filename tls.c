@@ -129,10 +129,11 @@ void handleFailure() {
 }
 
 int parse_url(char *error_message, char *hostname, char **host_resource, char *port) {
+  int gemini_scheme_length = strlen(GEMINI_SCHEME);
   // at first delete gemini scheme from hostname if it is included
-  if(strncmp(hostname, GEMINI_SCHEME, strlen(GEMINI_SCHEME)) == 0) {
+  if(strncmp(hostname, GEMINI_SCHEME, gemini_scheme_length) == 0) {
     // + 1 for '\0'
-    memmove(hostname, hostname + strlen(GEMINI_SCHEME), strlen(hostname) - strlen(GEMINI_SCHEME) + 1);
+    memmove(hostname, hostname + gemini_scheme_length, strlen(hostname) - gemini_scheme_length + 1);
   }
   
   // then check if there's port number included
@@ -165,7 +166,6 @@ int parse_url(char *error_message, char *hostname, char **host_resource, char *p
 
     // and cut the port number from the hostname
     memmove(p_port - i, p_port, strlen(p_port) + 1);
-
   }
   else {
     // default port
@@ -537,6 +537,11 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
     res = BIO_do_connect(gem_tls->bio_web);
   }
   
+  if(res <= 0) {
+    resp->error_message = "ERROR: cant connect to the peer\n";
+    goto error;
+  }
+
   res = BIO_do_handshake(gem_tls->bio_web);
   if(res == 0) {
     resp->error_message = "ERROR: cant do handshake\n";
@@ -657,6 +662,7 @@ struct response *tls_request(struct gemini_tls *gem_tls, const char *h) {
 }
 
 void tls_reset(struct gemini_tls *gem_tls) {
+  BIO_ssl_shutdown(gem_tls->bio_web);
   BIO_reset(gem_tls->bio_web);
   BIO_reset(gem_tls->bio_out);
   BIO_reset(gem_tls->bio_mem);
@@ -718,9 +724,10 @@ void tls_free(struct gemini_tls *gem_tls) {
 //  struct response *resp = calloc(1, sizeof(struct response));
 //  if(gem_tls == NULL) return -1;
 //
-//  for(int i = 0; i < 1; i++) {
-//    tls_connect(gem_tls, argv[argc - 1], resp); 
-//    tls_read(gem_tls);
+//  for(int i = 2; i < argc; i++) {
+//    tls_connect(gem_tls, argv[i], resp); 
+//      char *tmp = tls_read(gem_tls);
+//      printf("%s\n\n\n", tmp);
 //    tls_reset(gem_tls);
 //  }
 //

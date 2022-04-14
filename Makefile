@@ -4,7 +4,8 @@ CFLAGS=-I . -Wall -ggdb3
 DEPS = tofu.h tls.h
 OBJ = tofu.o tls.o tui.c
 
-LIBS = -lssl -lcrypto -lncurses -lform
+LIBS = -lssl -lcrypto -lncurses -lform 
+
 #openssl <3.0 default location
 LDFLAGS = -L/usr/local/ssl/lib
 
@@ -14,5 +15,5 @@ LDFLAGS = -L/usr/local/ssl/lib
 %.o: %.c $(DEPS)
 		$(CC) -c -o $@ $< $(CFLAGS)
 
-gemini: $(OBJ)
+gemcurses: $(OBJ)
 		$(CC) -o $@ $^ $(LDFLAGS) $(CFLAGS) $(LIBS)

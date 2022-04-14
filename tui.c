@@ -5,6 +5,7 @@
 #include <locale.h>
 
 #include <tls.h>
+#include <math.h>
 
 #define MAIN_GEM_SITE "warmedal.se/~antenna/"
 #define set_page_x(max_x) page_x = max_x - 2
@@ -31,7 +32,8 @@ FIELD *search_field[3];
 FORM  *search_form;
 const int search_bar_height = 1;
 const int info_bar_height = 1;
-const int scrolling_velocity = 1;
+const int scrolling_velocity = 2;
+const int offset_x = 2;
 
 int max_x, max_y;
 int page_x, page_y;
@@ -49,12 +51,17 @@ struct screen_line {
   int attr;
 };
 
-
 struct gemini_site {
+  char *url;
   struct screen_line **lines;
   int lines_num;
   int first_line_index, last_line_index, selected_link_index;
-  char *url;
+};
+
+struct gemini_history {
+  struct gemini_site **sites;
+  struct gemini_site **stack;
+  int size, index;
 };
 
 
@@ -164,6 +171,27 @@ static void draw_borders() {
   mvvline(max_y - 1, max_x - 2, 0, 1);
 }
 
+static void draw_scrollbar(struct gemini_site *gem_site) {
+  if(gem_site->lines_num <= 0) return;
+
+  float y;
+  float scrollbar_height = (float)((max_y - 4) * (max_y - 4)) / (float)gem_site->lines_num;
+  if(scrollbar_height < 1.0)
+    scrollbar_height = 1.0;
+
+  if(gem_site->first_line_index == 0) {
+    y = 0;
+  }
+  else {
+    y = (float)(gem_site->first_line_index + 1) / (float)gem_site->lines_num;
+    y = (max_y - 4) * y;
+    y = (int)(y + 0.5);
+  }
+
+  mvwvline(main_win, 0, max_x - 1, ' ', max_y - 2);
+  mvwvline(main_win, y, max_x - 1, 0, scrollbar_height);
+}
+
 
 static char *trim_whitespaces(char *str) {
   char *end;
@@ -253,7 +281,9 @@ static int get_paragraph_attr(char **paragraph, char **link) {
       attr |= A_UNDERLINE;
       offset = 2;
       char *tmp_para = *paragraph + 2;
-      
+      enum protocols { GOPHER, WWW, GEMINI};
+      enum protocols protocol = GEMINI;
+
       // skip the first whitespace
       while(*tmp_para != '\0' && isspace(*tmp_para)) {
         tmp_para++;
@@ -300,6 +330,7 @@ static struct screen_line** string_to_lines(struct gemini_site *gem_site, char *
   struct screen_line **lines = (struct screen_line**) calloc(1, 1 * sizeof(struct screen_line *));
   int num_lines = 0;
 
+  
   for(int i = 0; i < paragraphs_num; i++) {
   
     char *line_str = paragraphs[i], *link = NULL; 
@@ -313,22 +344,22 @@ static struct screen_line** string_to_lines(struct gemini_site *gem_site, char *
       int word_offset = 0;
       line_len = strlen(line_str);
 
-      if(line_len <= page_x)
+      if(line_len <= page_x - offset_x)
         is_last_line = false;
       else
-        line_len = page_x;
+        line_len = page_x - offset_x;
       
 
       // check if word at the end of the line needs to be moved to the next line
       char *tmp_line = line_str + line_len;
-      if(line_len == page_x && *(line_str + line_len) != '\0') {  
+      if(line_len == page_x - offset_x && *(line_str + line_len) != '\0') {  
         while(!isspace(*tmp_line) && tmp_line != line_str){
           word_offset++;
           tmp_line--;
         }
         // if we have one long line then let it be split
         // otherwise move 
-        if(word_offset > page_x / 2) {
+        if(word_offset > (page_x - offset_x)/ 2) {
           word_offset = 0;
         }
       }
@@ -359,7 +390,8 @@ static struct screen_line** string_to_lines(struct gemini_site *gem_site, char *
   gem_site->lines_num = num_lines;
   
   for(int i = 0; i < paragraphs_num; i++)
-    free(paragraphs[i]);
+    if(paragraphs[i])
+      free(paragraphs[i]);
   free(paragraphs);
 
   return lines;
@@ -428,7 +460,7 @@ static inline void scrolldown(struct gemini_site *gem_site) {
   wscrl(main_win, 1);
 
   struct screen_line *line = gem_site->lines[gem_site->last_line_index];
-  printline(line, 0, max_y - 5);
+  printline(line, offset_x, max_y - 5);
 
   gem_site->last_line_index++;
   gem_site->first_line_index++;
@@ -445,7 +477,7 @@ static inline void scrollup(struct gemini_site *gem_site) {
   gem_site->last_line_index--;
 
   struct screen_line *line = gem_site->lines[gem_site->first_line_index];
-  printline(line, 0, 0);
+  printline(line, offset_x, 0);
 }
 
 
@@ -459,7 +491,7 @@ static void print_gemini_site(struct gemini_site *gem_site, int first_line_index
   // print all we can
   for(int i = 0; i < page_y; i++){
     line = gem_site->lines[index];
-    printline(line, 0, i);
+    printline(line, offset_x, i);
     index++;
     if(index >= gem_site->lines_num)
       break;
@@ -473,20 +505,48 @@ static void print_gemini_site(struct gemini_site *gem_site, int first_line_index
 
 
 static inline void edit_line_attr(struct gemini_site *gem_site, int index, int offset, int attr) {
-    gem_site->lines[index]->attr = attr;
-    wmove(main_win, offset, 0);
-    wclrtoeol(main_win);
-    printline(gem_site->lines[index], 0, offset);
+  gem_site->lines[index]->attr = attr;
+  wmove(main_win, offset, 0);
+  wclrtoeol(main_win);
+  printline(gem_site->lines[index], offset_x, offset);
+}
+
+
+static inline void pagedown(struct gemini_site *gem_site) {
+  if(gem_site->lines_num > page_y) {
+    int start_line = 0;
+    if(gem_site->last_line_index + page_y > gem_site->lines_num)
+      start_line = gem_site->lines_num - page_y;
+    else
+      start_line = gem_site->last_line_index;
+  
+    werase(main_win);
+    print_gemini_site(gem_site, start_line);
+  }
+}
+
+
+static inline void pageup(struct gemini_site *gem_site) {
+  if(gem_site->lines_num > page_y) {
+    int start_line_index = 0;
+    if(gem_site->first_line_index - page_y < 0)
+      start_line_index = 0;
+    else
+      start_line_index = gem_site->first_line_index - page_y;
+
+    werase(main_win);
+    print_gemini_site(gem_site, start_line_index);
+  }
 }
 
 
 static void nextlink(struct gemini_site *gem_site) {
+  bool is_pagedown = false;
+start:
   if(gem_site->last_line_index > gem_site->lines_num)
     return;
   if(gem_site->lines == NULL)
     return;
-
-  // TODO 
 
   int link_index = gem_site->selected_link_index;
   if(link_index == 0) { 
@@ -502,7 +562,6 @@ static void nextlink(struct gemini_site *gem_site) {
 
   int offset = link_index - gem_site->first_line_index;
  
-
   // if the next link is on the current page, then just highlight it 
   for(int i = 1; i < gem_site->last_line_index - link_index; i++) {
     if(gem_site->lines[link_index + i]->link != NULL) {
@@ -517,22 +576,18 @@ static void nextlink(struct gemini_site *gem_site) {
     }
   }
 
-
   // if there's no link on the page, then go page down
-  if(gem_site->lines_num > page_y) {
-    int start_line = 0;
-    if(gem_site->last_line_index + page_y > gem_site->lines_num)
-      start_line = gem_site->lines_num - page_y;
-    else
-      start_line = gem_site->last_line_index - 1;
-    
-    werase(main_win);
-    print_gemini_site(gem_site, start_line);
-  }
+  if(is_pagedown) return;
+  is_pagedown = true;
+  pagedown(gem_site);
+  goto start;
 }
 
 
 static void prevlink(struct gemini_site *gem_site) {
+  bool is_pageup = false;
+
+start:
   if(gem_site->lines == NULL)
     return;
   if(gem_site->first_line_index < 0)
@@ -545,7 +600,7 @@ static void prevlink(struct gemini_site *gem_site) {
   else if(link_index < gem_site->first_line_index || link_index > gem_site->last_line_index){
     if(gem_site->first_line_index > 0) {
       gem_site->lines[link_index]->attr = A_NORMAL | A_UNDERLINE;
-      link_index = gem_site->last_line_index - 1;
+      link_index = gem_site->last_line_index;
       gem_site->selected_link_index = 0;
     }
   }
@@ -568,79 +623,187 @@ static void prevlink(struct gemini_site *gem_site) {
   }
   
   // if there's no link on the page, then go page up
-  if(gem_site->lines_num > page_y) {
-    int start_line_index = 0;
-    if(gem_site->first_line_index - page_y < 0)
-      start_line_index = 0;
-    else
-      start_line_index = gem_site->first_line_index - page_y + 1;
-
-    werase(main_win);
-    print_gemini_site(gem_site, start_line_index);
-  }
+  if(is_pageup) return;
+  is_pageup = true;
+  pageup(gem_site);
+  goto start;
 }
 
 
-static int request_gem_site(char *gemini_url, struct gemini_tls *gem_tls, struct gemini_site *gem_site, struct response **resp) {
+static char* handle_link_click(struct gemini_site *gem_site) {
+  if(gem_site->selected_link_index == 0 || gem_site->selected_link_index > gem_site->lines_num) 
+    return NULL;
 
-    info_bar_print("Connecting..."); 
-    refresh_windows();        
-    
-    struct response *new_resp = tls_request(gem_tls, gemini_url);
+  char *link = gem_site->lines[gem_site->selected_link_index]->link;
+  char *new_url = strdup(gem_site->url);
 
-    if(new_resp == NULL)
-      return 0;
+  if(gem_site->selected_link_index && link) {
+    if(strncmp(link, "gemini://", 9) == 0 || strncmp(link, "//", 2) == 0) {
+      if(link[0] == '/') 
+        link += 2;
 
-    if(new_resp->error_message != NULL) {
-      info_bar_print(new_resp->error_message);
-      free_resp(new_resp);
-      return 0;
-    }
-    
-    werase(main_win);
-    if(new_resp->body == NULL || new_resp->body[0] == '\0') {
-      info_bar_print("Empty body");
-      free_resp(new_resp);
-      return 0;
+      free(new_url);
+      return link;
     }
 
-    if(gem_site->lines)
-      free_lines(gem_site);
+    else if(strncmp(link, "gopher://", 9) == 0) {
+      info_bar_print("Gopher links not supported");
+      return NULL;
+    }
+    
+    else if(strncmp(link, "https://", 8) == 0 || strncmp(link, "http://", 7) == 0) {
+      wclear(info_bar_win);
+      wprintw(info_bar_win, "%s", link);
+      return NULL;
+    }
+    
+    else {
+      assert(new_url);
+      int url_length = strlen(new_url);
+      char *p = new_url;
 
-    if(*resp != NULL)
-      free_resp(*resp); 
+      // cut the gemini scheme from the url
+      if(strncmp(new_url, "gemini://", 9) == 0) p += 9;
+      // if link has no directory then add it
+      if(strchr(p, '/') == NULL) {
+        url_length += 1;
+        new_url = realloc(new_url, url_length + 1);
+        new_url[url_length - 1] = '/';
+        new_url[url_length]     = '\0';
+        
+        p = new_url;
+        if(strncmp(new_url, "gemini://", 9) == 0) p += 9;
+      }
+
+      // if there's an absolute path
+      if(strncmp(link, "/", 1) == 0) {
+        link++;
+        char *chr;
+        if((chr = strchr(p, '/')) != NULL) {
+          ++chr;
+          *chr = '\0';
+        }
+      }
+      else if(strncmp(link, "./", 2) == 0) {
+        link++;
+        char *chr;
+        if((chr = strrchr(p, '/')) != NULL) {
+          *chr = '\0';
+        }
+      }
+
+      // if we need to go one directory up
+      else if(strncmp(link, ".", 1) == 0) {
+        char *chr;
+        if((chr = strrchr(p, '/')) != NULL) {
+          *(chr) = '\0';
+        }
+        // if we need to go two directories up
+        if(strncmp(link, "..", 2) == 0) {
+          if((chr = strrchr(p, '/')) != NULL) {
+            *(chr) = '\0';
+            link++;
+          }
+        }
+       
+        link++;
+      }
+      // just concatenate it to the current path
+      else {
+        char *chr;
+        if((chr = strrchr(p, '/')) != NULL) {
+          ++chr;
+          if(*chr != '\0')
+            *chr = '\0';
+        }
+      }
       
-    *resp = new_resp;
-
-    gem_site->lines = string_to_lines(gem_site, (*resp)->body);
-    gem_site->selected_link_index = 0;
-    print_gemini_site(gem_site, 0);
-
-    switch((*resp)->cert_result) {
-      case TOFU_OK:
-        if((*resp)->was_resumpted) 
-          info_bar_print("Valid fingerprint! (session resumpted)");
-        else 
-          info_bar_print("Valid fingerprint!");
-        
-        break;
-      case TOFU_FINGERPRINT_MISMATCH:
-        if((*resp)->was_resumpted) 
-          info_bar_print("Fingerprint mistmatch! (session resumpted)");
-        else 
-          info_bar_print("Fingerprint mistmatch!");
-        
-        break;
-      case TOFU_NEW_HOSTNAME:
-        if((*resp)->was_resumpted) 
-          info_bar_print("New hostname! (session resumpted)");
-        else 
-          info_bar_print("New hostname!");
-        
-        break;
+      new_url = realloc(new_url, url_length + strlen(link) + 1);
+      strcat(new_url, link);
+      return new_url;
     }
+  }
+  return NULL;
+}
+
+static void add_to_history(struct gemini_site *gem_site, struct gemini_history *history) {
+  history->size++;
+  history->sites = realloc(history->sites, sizeof(struct gemini_site*) * history->size);
+  history->sites[history->size - 1] = gem_site;
+ 
+  history->index++;
+  history->stack = realloc(history->stack, sizeof(struct gemini_site*) * (history->index));
+  history->stack[history->index - 1] = gem_site;
+}
+
+static int request_gem_site(char *gemini_url, struct gemini_tls *gem_tls, struct gemini_site **gem_site, struct response **resp, struct gemini_history *history) {
+  
+  if(!gemini_url)
+    return 0;
+
+  info_bar_print("Connecting..."); 
+  refresh_windows();          
+  
+  struct response *new_resp = tls_request(gem_tls, gemini_url);
+  if(new_resp == NULL)
+    return 0;
+
+  if(new_resp->error_message != NULL) {
+    info_bar_print(new_resp->error_message);
+    free_resp(new_resp);
+    return 0;
+  }
+  
+  if(new_resp->body == NULL || new_resp->body[0] == '\0') {
+//    info_bar_print("Empty body");
+    werase(info_bar_win);
+    wprintw(info_bar_win, "%s", gemini_url);
+    free_resp(new_resp);
+    return 0;
+  }
+  
+
+  if(history->size > 0)
+    *gem_site = calloc(1, sizeof(struct gemini_site));
+  add_to_history(*gem_site, history);
+  
+  (*gem_site)->url = strdup(gemini_url);
+  
+  if(*resp != NULL)
+    free_resp(*resp);
     
-    return 1;
+  *resp = new_resp;
+
+  (*gem_site)->lines = string_to_lines(*gem_site, (*resp)->body);
+  (*gem_site)->selected_link_index = 0;
+  werase(main_win);
+  print_gemini_site(*gem_site, 0);
+
+  switch((*resp)->cert_result) {
+    case TOFU_OK:
+      if((*resp)->was_resumpted) 
+        info_bar_print("Valid fingerprint! (session resumpted)");
+      else 
+        info_bar_print("Valid fingerprint!");
+      
+      break;
+    case TOFU_FINGERPRINT_MISMATCH:
+      if((*resp)->was_resumpted) 
+        info_bar_print("Fingerprint mistmatch! (session resumpted)");
+      else 
+        info_bar_print("Fingerprint mistmatch!");
+      
+      break;
+    case TOFU_NEW_HOSTNAME:
+      if((*resp)->was_resumpted) 
+        info_bar_print("New hostname! (session resumpted)");
+      else 
+        info_bar_print("New hostname!");
+      
+      break;
+  }
+
+  return 1;
 }
 
 
@@ -678,11 +841,11 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
   form_driver(search_form, REQ_VALIDATION);
   char *search_str = strdup(trim_whitespaces(field_buffer(search_field[1], 0)));
 
+  // unfortunately there's no way to just resize a form, we need to recreate it
   unpost_form(search_form);
   free_form(search_form);
   free_field(search_field[1]);
- 
-  // unfortunately there's no way to just resize a form, we need to recreate it
+  
   create_form(true);
   set_field_buffer(search_field[1], 0, search_str);
   free(search_str);
@@ -707,6 +870,8 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
 
 
 int main() {
+
+//  sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
   // set encoding for emojis
   // however some emojis may not work
   setlocale(LC_ALL, "en_US.utf8");
@@ -717,10 +882,12 @@ int main() {
   refresh_windows();
 
   struct gemini_tls *gem_tls = init_tls(0);
-  if(gem_tls == NULL) return -1;
-  
+  if(gem_tls == NULL) 
+    exit(EXIT_FAILURE);
+
   struct response *resp = NULL;
   struct gemini_site *gem_site = calloc(1, sizeof(struct gemini_site));
+  struct gemini_history *history  = calloc(1, sizeof(struct gemini_history));
 
   // mouse support
   MEVENT event;
@@ -728,8 +895,10 @@ int main() {
 
   int ch = 0;
   while(ch != KEY_F(1)) {
-   
+  
+    draw_scrollbar(gem_site);
     refresh_windows();
+
     ch = getch();
     if(current_focus == MAIN_WINDOW){
       switch(ch) {      
@@ -758,18 +927,46 @@ int main() {
             prevlink(gem_site);
           break;
 
+        case KEY_NPAGE:
+          pagedown(gem_site);
+          break;
+        case KEY_PPAGE:
+          pageup(gem_site);
+          break;
+
         case 'B':
-          if(gem_site->url) {
-            free(gem_site->url);
-            gem_site->url = NULL;
+          char *url = MAIN_GEM_SITE;
+          int res = request_gem_site(
+              url, 
+              gem_tls, 
+              &gem_site, 
+              &resp, 
+              history
+          );
+          if(res) {
+           curs_set(0);
+            form_driver(search_form, REQ_CLR_FIELD);
+            set_field_buffer(search_field[1], 0, gem_site->url);
+            refresh();
           }
-          
-          gem_site->url = strdup(MAIN_GEM_SITE);
-          request_gem_site(gem_site->url, gem_tls, gem_site, &resp);
-          curs_set(0);
-          form_driver(search_form, REQ_CLR_FIELD);
-          set_field_buffer(search_field[1], 0, gem_site->url);
-          refresh();
+          break;
+        
+        case 'P':
+          if(history->sites) {
+            if(history->index > 1)
+              history->index--;
+            else 
+              break;
+            
+            gem_site = history->stack[history->index - 1];
+            werase(main_win);
+            print_gemini_site(gem_site, 0);
+            
+            curs_set(0);
+            form_driver(search_form, REQ_CLR_FIELD);
+            set_field_buffer(search_field[1], 0, gem_site->url);
+            refresh();
+          }
           break;
 
         case 'Q':
@@ -785,95 +982,26 @@ int main() {
         // enter
         case 10:
           if(current_mode == LINKS_MODE) {
-            if(gem_site->selected_link_index == 0 || gem_site->selected_link_index > gem_site->lines_num) 
+            
+            char *url = NULL;
+            if((url = handle_link_click(gem_site)) == NULL) 
               break;
 
-            char *link = gem_site->lines[gem_site->selected_link_index]->link;
-            
-            if(gem_site->selected_link_index && link) {
-              if(strncmp(link, "gemini://", 9) == 0 || strncmp(link, "//", 2) == 0) {
-                if(gem_site->url)
-                  free(gem_site->url);
-
-                if(link[0] == '/') link += 2;
-                gem_site->url = strdup(link);
-              }
-   
-              else if(strncmp(link, "gopher://", 9) == 0) {
-                info_bar_print("Gopher links not supported");
-                break;
-              }
-              
-              else if(strncmp(link, "https://", 8) == 0 || strncmp(link, "http://", 7) == 0) {
-//                info_bar_print("Web links not supported");
-                wclear(info_bar_win);
-                wprintw(info_bar_win, "%s", link);
-                break;
-              }
-              
-              else {
-                assert(gem_site->url);
-                int url_length = strlen(gem_site->url);
-                char *p = gem_site->url, *chr;
-
-                // cut the gemini scheme from the url
-                if(strncmp(gem_site->url, "gemini://", 9) == 0) p += 9;
-                // if there's an absolute path
-                if(strncmp(link, "/", 1) == 0 || strncmp(link, "./", 2) == 0) {
-                
-                  if(link[0] == '.') link++;
-                  
-                  if((chr = strchr(p, '/')) != NULL) {
-                    url_length = chr - gem_site->url;
-                    gem_site->url[url_length] = '\0';
-                  }
-                }
-
-                // if we need to go one directory up
-                else if(strncmp(link, ".", 1) == 0) {
-                  char *pageup;
-                  if((pageup = strrchr(p, '/')) != NULL) {
-                    *(pageup) = '\0';
-                  }
-                  // if we need to go two directories up
-                  if(strncmp(link, "..", 2) == 0) {
-                    if((pageup = strrchr(p, '/')) != NULL) {
-                      *(pageup) = '\0';
-                      link++;
-                    }
-                  }
-                  
-                  link++;
-                }
-                // just concatenate it to the current path
-                else {
-                  char *last;
-                  if((last = strrchr(p, '/')) != NULL) {
-                    url_length = last - gem_site->url + 1;
-                    gem_site->url[url_length] = '\0';
-                  }
-                }
-
-                gem_site->url = realloc(gem_site->url, url_length + strlen(link) + 1);
-                strcat(gem_site->url, link);
-              }
-
-              int res = request_gem_site(
-                  gem_site->url, 
-                  gem_tls, 
-                  gem_site, 
-                  &resp
-              );
-              
-              if(res) {
-                curs_set(0);
-                form_driver(search_form, REQ_CLR_FIELD);
-                set_field_buffer(search_field[1], 0, gem_site->url);
-                refresh();
-              }
+            int res = request_gem_site(
+                url, 
+                gem_tls, 
+                &gem_site, 
+                &resp,
+                history
+            );
+             
+            if(res) {
+              curs_set(0);
+              form_driver(search_form, REQ_CLR_FIELD);
+              set_field_buffer(search_field[1], 0, gem_site->url);
+              refresh();
             }
           }
-
           break;
 
         case KEY_MOUSE:
@@ -938,10 +1066,9 @@ int main() {
           (2) from the field's or form's initialization or termination hooks, or
           (3) just after a REQ_VALIDATION request has been processed by the forms driver
           */
-          char *old_url = gem_site->url;
-          
           form_driver(search_form, REQ_VALIDATION);
-          gem_site->url = strdup(trim_whitespaces(field_buffer(search_field[1], 0)));
+         
+          char *url = trim_whitespaces(field_buffer(search_field[1], 0));
           wmove(main_win, 0, 0);
           form_driver(search_form, REQ_PREV_FIELD);
 
@@ -951,14 +1078,13 @@ int main() {
           form_driver(search_form, REQ_PREV_FIELD);
           form_driver(search_form, REQ_END_LINE);
          
-          int res = request_gem_site(gem_site->url, gem_tls, gem_site, &resp);
-          if(!res) {
-            free(gem_site->url);
-            gem_site->url = old_url;
-          }
-          else {
-            free(old_url);
-          }
+          int res = request_gem_site(
+              url, 
+              gem_tls, 
+              &gem_site, 
+              &resp,
+              history
+          );
 
           break;
 
@@ -977,6 +1103,13 @@ int main() {
   tls_free(gem_tls);
   free_resp(resp);
   free_windows();
-  if(gem_site->lines != NULL)
-    free_lines(gem_site);
+  for(int i = 0; i < history->size; i++) { 
+    struct gemini_site *site = history->sites[i];
+    if(site) {
+      if(site->lines != NULL)
+        free_lines(site);
+      free(site);
+      site = NULL;
+    }
+  }
 }

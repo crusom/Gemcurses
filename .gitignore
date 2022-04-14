@@ -1,6 +1,7 @@
 tls
-gemini
+gemcurses
 *.o
 known_hosts
 key.pem
 cert.pem
+nice_capsules.txt
