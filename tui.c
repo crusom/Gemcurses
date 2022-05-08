@@ -15,18 +15,6 @@
 #define set_page_x(max_x) page_x = max_x - 2
 #define set_page_y(max_y) page_y = max_y - search_bar_height - info_bar_height - 1 - 1
 
-/*
-  KNOWN BUGS:
-  - probably a lot, tell me if u find any,
-*/
-
-/*
-  TODO:
-  - images viewing,
-  - quote paragraphs support,
-  - handling different response codes,
-*/
-
 WINDOW *main_win = NULL, *search_bar_win = NULL, *info_bar_win = NULL, *mode_win = NULL;
 PANEL  *dialog_panel = NULL; WINDOW *dialog_win = NULL, *dialog_subwin = NULL;
 FIELD  *search_field[3];
