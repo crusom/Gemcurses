@@ -871,16 +871,13 @@ static char* handle_link_click(char *base_url, char *link) {
       }
     }
 
-    // if we need to go one directory up
-    else if(m_strncmp(link, ".") == 0) {
+    // if we need to go two or more directories up, then path travel
+    else if(m_strncmp(link, "..") == 0) {
       char *chr;
-      if((chr = strrchr(p, '/')) != NULL) {
-        *(chr) = '\0';
-      }
-      // or if more directories up, then path travel
       while(m_strncmp(link, "..") == 0) {
-        if((chr = strrchr(p, '/')) != NULL) {
-          *(chr) = '\0';
+        for(int i = 0; i < 2; i++) {
+          if((chr = strrchr(p, '/')) != NULL)
+            *(chr) = '\0';
         }
         link += 2;
         if(m_strncmp(link, "/") == 0) {
@@ -891,6 +888,14 @@ static char* handle_link_click(char *base_url, char *link) {
       // didnt go too far, and adjust
       if(*(link - 1) == '/')
         link--;
+    }
+    // if we need to go one directory up
+    else if(m_strncmp(link, ".") == 0) {
+      char *chr;
+      if((chr = strrchr(p, '/')) != NULL) {
+        *(chr) = '\0';
+      }
+      link++;
     }
     // just concatenate it to the current path
     else {
