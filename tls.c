@@ -113,7 +113,7 @@ static SSL_SESSION *tls_get_session(struct gemini_tls *gem_tls, const char *host
   struct session_reuse *sess_p = gem_tls->session;
   
   while(sess_p) {
-    if(strcmp(gem_tls->cur_hostname, sess_p->hostname) == 0){    
+    if(strcmp(hostname, sess_p->hostname) == 0){    
       return sess_p->session;
     }
     sess_p = sess_p->next;
@@ -395,6 +395,7 @@ struct gemini_tls* init_tls(int flag) {
   if((flag & TLS_DEBUGGING) == 1)
     SSL_CTX_set_info_callback(gem_tls->ctx, ssl_info_callback);
   
+
   SSL_CTX_set_verify_depth(gem_tls->ctx, 4);
 
   // disable SSL cause its obolete and dangerous
@@ -434,7 +435,6 @@ struct gemini_tls* init_tls(int flag) {
 
   // use ex data in callbacks 
   SSL_set_ex_data(gem_tls->ssl, 0, gem_tls);
-
 
   return gem_tls;
 
@@ -502,14 +502,17 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
     SSL_set_session(gem_tls->ssl, session);
   }
 
+
+  #include <sys/poll.h>
   int fdSocket;
   fd_set connectionfds;
-  struct timeval timeout;
+  
+  // I need non-blocking socket for poll()
   BIO_set_nbio(gem_tls->bio_web, 1);
-
+  
   res = BIO_do_connect(gem_tls->bio_web);
   if((res <= 0) && !BIO_should_retry(gem_tls->bio_web)) {
-    resp->error_message = "ERROR: cant bio connect\n";
+    resp->error_message = "ERROR: cant connect\n";
     goto error;
   }
  
@@ -517,23 +520,27 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
     resp->error_message = "ERROR: cant get fd\n";
     goto error;
   }
-
-
+  
   if(res <= 0) {
     FD_ZERO(&connectionfds);
     FD_SET(fdSocket, &connectionfds);
 
-    timeout.tv_sec = 2;
-    timeout.tv_usec = 500000;
+    struct pollfd fd;
+    fd.fd = fdSocket;
+    fd.events = POLLOUT;
 
-    res = select(fdSocket + 1, NULL, &connectionfds, NULL, &timeout);
+    res = poll(&fd, 1, 1000);
     if(res == 0){
       resp->error_message = "ERROR: timeout\n"; 
       goto error;
     }
   }
-  
-  while(BIO_should_retry(gem_tls->bio_web)) {
+
+  // this busy loop is bad for performance but i have no idea
+  // how to do it efficiently.
+  // (blocking sockets seem efficient but then i can't use poll())
+  // without flushing in some cases we may be stuck forever
+  while(BIO_should_retry(gem_tls->bio_web) && BIO_flush(gem_tls->bio_web) > 0) {
     res = BIO_do_connect(gem_tls->bio_web);
   }
   
@@ -606,7 +613,7 @@ cleanup:
 }
 
 
-char *tls_read(struct gemini_tls *gem_tls) {
+int tls_read(struct gemini_tls *gem_tls, struct response *resp) {
   int len = 0;
   char buff[1536];
   int written = 0;
@@ -625,21 +632,27 @@ char *tls_read(struct gemini_tls *gem_tls) {
   if(BIO_get_mem_ptr(gem_tls->bio_mem, &bptr) > 0) {
     if(bptr != NULL) {
       if(bptr->length <= 0 || bptr->data == NULL)
-        return NULL;
+        return 0;
     }
-    else return NULL;
+    else return 0;
   }
   else
-    return NULL;
-  bptr->data[written] = 0;
+    return 0;
 
-  return strdup(bptr->data);
+  char *res = malloc(bptr->length + 1);
+  if(res == NULL) {
+    fprintf(stderr, "Cant malloc");
+    exit(EXIT_FAILURE);
+  }
 
-// TODO check reponse and save
-//  if(strncmp(buff, "20", 2))
-//    tofu_save_cert(hostname_with_portn, hash);
-//  puts("\n");
+  memcpy(res, bptr->data, bptr->length);
+  // ensure that we have null byte at the end, or some terrible things may happen
+  res[bptr->length] = '\0';
+  resp->body_size = bptr->length;
+  resp->body = res;
+  return 1;
 }
+
 
 struct response *tls_request(struct gemini_tls *gem_tls, const char *h) {
   
@@ -654,11 +667,21 @@ struct response *tls_request(struct gemini_tls *gem_tls, const char *h) {
     return resp;
   }
   
-  resp->body = tls_read(gem_tls);
+  tls_read(gem_tls, resp);
   tls_reset(gem_tls);
 
+  if(resp->body && resp->body[0] && resp->body[1]) {
+    int resp_num;
+    resp_num = resp->body[1] - '0';
+    resp_num += 10 * (resp->body[0] - '0');
+    resp->status_code = resp_num;
+  }
+  else {
+    resp->error_message = "Can't connect to the host";
+    resp->status_code = 0;
+  }
+  
   return resp;
-
 }
 
 void tls_reset(struct gemini_tls *gem_tls) {

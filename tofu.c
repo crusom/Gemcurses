@@ -13,7 +13,6 @@ enum tofu_check_results tofu_check_cert(struct known_host **host, char *hostname
   while(tmp_host) {
 
     // printf("HOST: %s", (tmp_host)->hostname);
-
     if(strcmp(tmp_host->hostname, hostname) != 0) {
       goto next;
     }
@@ -22,8 +21,7 @@ enum tofu_check_results tofu_check_cert(struct known_host **host, char *hostname
 //      printf("Valid fingerprint found!\n");
       return TOFU_OK;
     }
-   
-    // TODO bad cert
+//    TODO bad cert
 //    fprintf(stderr, "FINGERPRINT MISMATCH!");
     return TOFU_FINGERPRINT_MISMATCH;
    
