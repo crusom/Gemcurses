@@ -15,9 +15,6 @@
 
 #include <tls.h>
 
-// test resumption
-// gemini://thegonz.net:1956
-
 #define GEMINI_SCHEME "gemini://"
 #define HOST_PORT ":1965"
 #define HOST_RESOURCE "/"

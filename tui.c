@@ -35,7 +35,7 @@ enum element current_focus = MAIN_WINDOW;
 enum mode {SCROLL_MODE, LINKS_MODE};
 enum mode current_mode = SCROLL_MODE;
 
-enum color { LINK_COLOR = 1, H1_COLOR = 2, H2_COLOR = 3, H3_COLOR = 4, QUOTE_COLOR = 5, 
+enum color {LINK_COLOR = 1, H1_COLOR = 2, H2_COLOR = 3, H3_COLOR = 4, QUOTE_COLOR = 5, 
             DIALOG_COLOR = 6};
 
 bool is_dialog_hidden = true;
@@ -240,6 +240,9 @@ static void draw_scrollbar(struct gemini_site *gem_site) {
   if(gem_site->first_line_index == 0) {
     y = 0;
   } 
+  else if(gem_site->last_line_index == gem_site->lines_num) {
+    y = max_y - 3 - scrollbar_height;
+  }
   else {
     y = (float)(gem_site->first_line_index + 1) / (float)gem_site->lines_num;
     y = (max_y - 4) * y;
@@ -1194,7 +1197,6 @@ loop:
         was_redirected = true;
 
         hide_dialog();
-        // gemini://going-flying.com/cgi-bin/converter/10
         goto func_start;
       }
       else if(ch == 'n' || ch == 'N') {
