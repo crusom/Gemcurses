@@ -11,9 +11,10 @@
 #include <assert.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/poll.h>
 #include <fcntl.h>
 
-#include <tls.h>
+#include "tls.h"
 
 #define GEMINI_SCHEME "gemini://"
 #define HOST_PORT ":1965"
@@ -120,12 +121,7 @@ static SSL_SESSION *tls_get_session(struct gemini_tls *gem_tls, const char *host
 
 }
 
-// TODO
-void handleFailure() {
-  fprintf(stderr, "ERROR: smth went wrong");
-}
-
-int parse_url(char *error_message, char *hostname, char **host_resource, char *port) {
+int parse_url(const char *error_message, char *hostname, char **host_resource, char port[6]) {
   int gemini_scheme_length = strlen(GEMINI_SCHEME);
   // at first delete gemini scheme from hostname if it is included
   if(strncmp(hostname, GEMINI_SCHEME, gemini_scheme_length) == 0) {
@@ -166,23 +162,26 @@ int parse_url(char *error_message, char *hostname, char **host_resource, char *p
   }
   else {
     // default port
-    strcpy(port, ":1965");
+    static const char default_port[] = ":1965";
+    memmove(port, default_port, sizeof(default_port));
   }
 
   // get the resource if included and cut it from the hostname
-  char *tmp_resource = strchr(hostname, '/');
-  if(tmp_resource != NULL) {
-    int resource_offset = tmp_resource - hostname;
-    int resource_lenght = strlen(hostname) - resource_offset;
-    *host_resource = (char *)malloc(resource_lenght + 1);
-    
-    memcpy(*host_resource, hostname + resource_offset, resource_lenght);
-    (*host_resource)[resource_lenght] = '\0';    
-    hostname[resource_offset] = '\0';
-  }
-  else {
-    // default resource
-    *host_resource = strdup("/");
+  if(host_resource != NULL) {
+    char *tmp_resource = strchr(hostname, '/');
+    if(tmp_resource != NULL) {
+      int resource_offset = tmp_resource - hostname;
+      int resource_lenght = strlen(hostname) - resource_offset;
+      *host_resource = (char *)malloc(resource_lenght + 1);
+      
+      memcpy(*host_resource, hostname + resource_offset, resource_lenght);
+      (*host_resource)[resource_lenght] = '\0';    
+      hostname[resource_offset] = '\0';
+    }
+    else {
+      // default resource
+      *host_resource = strdup("/");
+    }
   }
 
     return 1;
@@ -367,7 +366,6 @@ struct gemini_tls* init_tls(int flag) {
   }
 
 
-  // TODO auto generate cert
   // https://stackoverflow.com/questions/256405/programmatically-create-x509-certificate-using-openssl/15082282#15082282
 
   if(access(CERT_FILENAME, F_OK ) != 0 || access(KEY_FILENAME, F_OK) != 0) {
@@ -375,7 +373,6 @@ struct gemini_tls* init_tls(int flag) {
       goto cleanup;
     }
   }
-
 
   if(SSL_CTX_use_certificate_file(gem_tls->ctx, CERT_FILENAME, SSL_FILETYPE_PEM) != 1) {
     fprintf(stderr, "ERROR: cant load client cert\n");
@@ -463,22 +460,16 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   if(host_resource == NULL)
     alloc_error();
 
-//  TODO DEBUGGING
 //  printf("host name: %s\n", hostname);
 //  printf("host resource: %s\n", host_resource);
 //  printf("port number: %s\n", host_port);
+  int hostname_len = strlen(hostname), host_port_len = strlen(host_port);
 
-  hostname_with_portn = strdup(hostname);
-  if(hostname_with_portn == NULL)
-    alloc_error();
+  hostname_with_portn = malloc(hostname_len + host_port_len + 1);
+  if(hostname_with_portn == NULL) alloc_error();
+  memcpy(hostname_with_portn, hostname, hostname_len);
+  memcpy(hostname_with_portn + hostname_len, host_port, host_port_len + 1);
 
-  char* temp = realloc(hostname_with_portn, 
-                       strlen(hostname_with_portn) + strlen(host_port) + 1);
-  if(temp == NULL)
-    alloc_error();
-
-  hostname_with_portn = temp;
-  strcat(hostname_with_portn, host_port);
   gem_tls->cur_hostname = strdup(hostname_with_portn);
 
   res = BIO_set_conn_hostname(gem_tls->bio_web, hostname_with_portn);
@@ -487,7 +478,6 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
     goto error;
   }
 
-  
   res = SSL_set_tlsext_host_name(gem_tls->ssl, hostname);
   if(res == 0) {
     resp->error_message = "ERROR: cant set hostname\n";
@@ -499,12 +489,9 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
     SSL_set_session(gem_tls->ssl, session);
   }
 
-
-  #include <sys/poll.h>
   int fdSocket;
   fd_set connectionfds;
-  
-  // I need non-blocking socket for poll()
+  // set non-blocking socket for poll()
   BIO_set_nbio(gem_tls->bio_web, 1);
   
   res = BIO_do_connect(gem_tls->bio_web);
@@ -557,10 +544,6 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   else
     resp->was_resumpted = false;
 
-
-  //TODO add client certificate
-  // for test: gemini.thegonz.net/diohsc/
-
   X509* cert = SSL_get_peer_certificate(gem_tls->ssl);
   if(cert == NULL) {
     resp->error_message = "ERROR: cant get peer cert\n";
@@ -568,10 +551,9 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   }
    
   tls_get_peer_fingerprint(gem_tls->ctx, cert, &hash);
-  // there may be diffrent certs on different ports and subdomains
+  // there may be different certs on different ports and subdomains
   resp->cert_result = tofu_check_cert(&gem_tls->host, hostname_with_portn, hash); 
-  
-//  printf("CERT: %s", hash);
+  // printf("CERT: %s", hash);
   if(cert) { 
     X509_free(cert); 
   }
@@ -579,7 +561,7 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   int url_len = strlen("gemini://") + strlen(hostname) + strlen(host_resource) + strlen(CLRN) + 1;
   url = (char*)malloc(url_len);
   
-  strcpy(url, "gemini://");
+  memcpy(url, "gemini://", sizeof("gemini://"));
   strcat(url, hostname);
   strcat(url, host_resource);
   strcat(url, CLRN);
@@ -616,7 +598,6 @@ int tls_read(struct gemini_tls *gem_tls, struct response *resp) {
   int written = 0;
 
   do {
-    
     len = BIO_read(gem_tls->bio_web, buff, sizeof(buff));
     BIO_flush(gem_tls->bio_web);
     if(len > 0){
@@ -652,18 +633,15 @@ int tls_read(struct gemini_tls *gem_tls, struct response *resp) {
 
 
 struct response *tls_request(struct gemini_tls *gem_tls, const char *h) {
-  
-  int res;
+    
   struct response *resp = calloc(1, sizeof(struct response));
   if(resp == NULL) return NULL;
-  resp->error_message = NULL;
-  resp->body = NULL;
 
-  if(!(res = tls_connect(gem_tls, h, resp))) {
+  if(!tls_connect(gem_tls, h, resp)) {
     tls_reset(gem_tls);
     return resp;
   }
-  
+
   tls_read(gem_tls, resp);
   tls_reset(gem_tls);
 
@@ -677,9 +655,10 @@ struct response *tls_request(struct gemini_tls *gem_tls, const char *h) {
     resp->error_message = "Can't connect to the host";
     resp->status_code = 0;
   }
-  
+
   return resp;
 }
+
 
 void tls_reset(struct gemini_tls *gem_tls) {
   BIO_ssl_shutdown(gem_tls->bio_web);
@@ -746,9 +725,11 @@ void tls_free(struct gemini_tls *gem_tls) {
 //
 //  for(int i = 2; i < argc; i++) {
 //    tls_connect(gem_tls, argv[i], resp); 
-//      char *tmp = tls_read(gem_tls);
-//      printf("%s\n\n\n", tmp);
-//    tls_reset(gem_tls);
+//      int tmp = tls_read(gem_tls, resp);
+//      printf("%s\n\n\n", resp->body);
+//      if(resp->error_message)
+//        printf("%s", resp->error_message);
+//      tls_reset(gem_tls);
 //  }
 //
 //  tls_free(gem_tls);

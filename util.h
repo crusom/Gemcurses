@@ -14,12 +14,13 @@
 #include <stdbool.h>
 #include <assert.h>
 
-#define MALLOC_ERROR() fprintf(stderr, "Cant malloc"); exit(EXIT_FAILURE);
+#include <tls.h>
 
 int get_valid_query(char **query);
 int get_default_app(char *mime_type, char default_app[NAME_MAX + 1]);
 char *get_mime_type(char *str);
 int open_file(char *buf, char *filename, char *app, int size, int offset);
 int save_file(char save_path[PATH_MAX + 1], char *buf, char *filename, int size, int offset);
+void save_gemsite(char *url, struct response *resp);
 
 #endif

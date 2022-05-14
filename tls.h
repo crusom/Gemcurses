@@ -43,16 +43,10 @@ enum response_status_codes {
   CODE_CERTIFICATE_NOT_VALID = 62,
 };
 
-enum mime_types {
-  TEXT_GEMINI,
-  PDF,
-  PNG,
-};
-
 struct response {
   char *body;
+  const char *error_message;
   int body_size;
-  char *error_message;
   enum tofu_check_results cert_result;
   enum response_status_codes status_code;
   bool was_resumpted;
@@ -67,4 +61,5 @@ int tls_connect(Gemini_tls gem_tls, const char *h, struct response *resp);
 int tls_read(Gemini_tls gem_tls, struct response *resp);
 void tls_reset(Gemini_tls gem_tls);
 void tls_free(struct gemini_tls *gem_tls);
+
 #endif

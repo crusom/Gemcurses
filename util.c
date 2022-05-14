@@ -20,7 +20,7 @@ char percentage_encode_chars[][4] = {
   ";", "%3B",
   "=", "%3D",
   "%", "%25",
-  "  ", "%20"
+  " ", "%20",
 };
 
 
@@ -34,11 +34,13 @@ int get_valid_query(char **query) {
 
   while(i < query_size) {
     char c = (*query)[i];
-    if(isalpha(c) || isdigit(c)) {
+    if(isalpha(c) || isdigit(c) ||
+           c == '-' || c == '_' || 
+           c == '.' || c == '~') {
       i++;
       continue;
     }
- 
+
     static int len = sizeof(percentage_encode_chars)/sizeof(percentage_encode_chars[0]);
     bool was_found = false;
     for(int j = 0; j < len; j += 2) {
@@ -84,7 +86,8 @@ char *get_mime_type(char *str) {
 
   char *res = malloc(len + 1);
   if(res == NULL) {
-    MALLOC_ERROR();
+    fprintf(stderr, "ERROR: cant allocate memory\n");
+    exit(EXIT_FAILURE);
   }
 
   strncpy(res, p, len);
@@ -250,7 +253,8 @@ err:
 void write_file(char *buf, char *save_path, int size, int offset) {
   FILE *f = fopen(save_path, "wb");
   if(f == NULL) {
-    MALLOC_ERROR();
+    fprintf(stderr, "ERROR: cant allocate memory\n");
+    exit(EXIT_FAILURE);
   }
   
   fwrite(buf + offset, sizeof(char), size - offset, f);
@@ -287,3 +291,6 @@ int open_file(char *buf, char *filename, char *app, int size, int offset) {
   exec_app(app, save_path);
   return 1;
 }
+
+// TODO
+void save_gemsite(char *url, struct response *resp) {}

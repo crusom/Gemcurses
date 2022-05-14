@@ -38,6 +38,8 @@ enum mode current_mode = SCROLL_MODE;
 enum color {LINK_COLOR = 1, H1_COLOR = 2, H2_COLOR = 3, H3_COLOR = 4, QUOTE_COLOR = 5, 
             DIALOG_COLOR = 6};
 
+const char yes_no_options[] = {'y', 'n'};
+
 bool is_dialog_hidden = true;
 
 struct screen_line {
@@ -100,7 +102,7 @@ static inline void init_colors() {
   
 }
 
-static inline void init_dialog_panel() {
+static void init_dialog_panel() {
   int lines = max_y * (6.0 / 8.0);
   int cols  = max_x * (6.0 / 8.0);
   dialog_win = newwin(lines, cols, max_y / 8, max_x / 8);
@@ -115,7 +117,7 @@ static inline void init_dialog_panel() {
   doupdate();
 }
 
-static int init_windows() {
+static void init_windows() {
   initscr();
   keypad(stdscr, true); 
   mouseinterval(0);
@@ -137,12 +139,8 @@ static int init_windows() {
   mode_win = newwin(1, 1, max_y - 1, max_x - 1);
 
   init_colors();
-  refresh();
-  
-  return 1;
+  refresh();  
 }
-
-// ########## FREEING ##########
 
 static void init_search_form(bool resize) {
   // search_field[0] is a static field so we need to create it only once 
@@ -152,14 +150,15 @@ static void init_search_form(bool resize) {
     search_field[0] = new_field(search_bar_height, 6, 0, 0, 0, 0);
     field_opts_off(search_field[0], O_EDIT);
     set_field_opts(search_field[0], O_VISIBLE | O_PUBLIC | O_AUTOSKIP);
+    set_field_buffer(search_field[0], 0, "url:");
     // [2]
     search_field[2] = NULL;
-    set_field_buffer(search_field[0], 0, "url:");
   }
   // [1]
   search_field[1] = new_field(search_bar_height, max_x - 6, 0, 6, 0, 0);
   set_field_back(search_field[1], A_UNDERLINE);
   set_field_opts(search_field[1], O_VISIBLE | O_PUBLIC | O_ACTIVE | O_EDIT);
+  // 1024 is max url length
   set_max_field(search_field[1], 1024);
   field_opts_off(search_field[1], O_STATIC);
 
@@ -168,6 +167,8 @@ static void init_search_form(bool resize) {
   set_form_sub(search_form, derwin(search_bar_win, search_bar_height, max_x, 0, 0));
   post_form(search_form);
 }
+
+// ########## FREEING ##########
 
 void free_windows() {
   if(search_form) {
@@ -178,6 +179,7 @@ void free_windows() {
     free_field(search_field[0]);
   if(search_field[1])  
     free_field(search_field[1]); 
+  
   endwin();
 }
 
@@ -193,6 +195,7 @@ static void free_lines(struct gemini_site *gem_site) {
         int j = 0;
         free(p);
 
+        // the  next line may have the same link pointer so take care of it
         while(i + j < gem_site->lines_num) {
           if(gem_site->lines[i + j]->link == p) {
             gem_site->lines[i + j]->link = NULL;
@@ -233,7 +236,7 @@ static void draw_scrollbar(struct gemini_site *gem_site) {
   if(gem_site->lines_num <= 0) return;
 
   float y;
-  float scrollbar_height = (float)((max_y - 4) * (max_y - 4)) / (float)gem_site->lines_num;
+  float scrollbar_height = (float)((page_y) * (page_y)) / (float)gem_site->lines_num;
   if(scrollbar_height < 1.0)
     scrollbar_height = 1.0;
 
@@ -241,11 +244,11 @@ static void draw_scrollbar(struct gemini_site *gem_site) {
     y = 0;
   } 
   else if(gem_site->last_line_index == gem_site->lines_num) {
-    y = max_y - 3 - scrollbar_height;
+    y = max_y - page_y;
   }
   else {
     y = (float)(gem_site->first_line_index + 1) / (float)gem_site->lines_num;
-    y = (max_y - 4) * y;
+    y = page_y * y;
     y = (int)(y + 0.5);
   }
 
@@ -279,11 +282,10 @@ static inline int m_strncmp(char *a, const char *b) {
 
 static char **string_to_paragraphs(char *str, int *paragraphs_num) {
   
-  char *str_tmp = str;
   int i = 0, num_newlines = 0;
   // count new paragraphs to know how many gemini_paragraph to allocate
-  while(str_tmp[i] != '\0') {
-    if(str_tmp[i] == '\n') {
+  while(str[i] != '\0') {
+    if(str[i] == '\n') {
       num_newlines++;
     }
     i++;
@@ -291,9 +293,9 @@ static char **string_to_paragraphs(char *str, int *paragraphs_num) {
   
   char **paragraphs = (char **) calloc(1, num_newlines * sizeof(char*));
 
-  char *str_start = str;
+  char *str_tmp = str, *str_start = str;
   int index_line = 0;
-  // fill 'paragraphs'
+  // fill paragraphs array
   while(*str_tmp != '\0') {
     if(*str_tmp == '\n') {
       paragraphs[index_line] = strndup(str_start, str_tmp - str_start);
@@ -357,7 +359,6 @@ static int get_paragraph_attr(char **paragraph, char **link, const char **protoc
         offset++;
       }
 
-
       const char *https  = " [https]";
       const char *http   = " [http]";
       const char *gopher = " [gopher]";
@@ -391,14 +392,12 @@ static int get_paragraph_attr(char **paragraph, char **link, const char **protoc
         *link = link_p;
       }
       
-      
       // skip whitespace after url
       while(*tmp_para != '\0' && isspace(*tmp_para)) {
         tmp_para++;
         offset++;
       }
      
-
       // if there is no '<USER_FRIENDLY LINK NAME>' then show the plain URL
       if(*tmp_para == '\0') {
         *protocol = NULL;
@@ -430,7 +429,7 @@ static struct screen_line** paragraphs_to_lines(struct gemini_site *gem_site, ch
   
     const char *protocol = NULL; 
     char *line_str = paragraphs[i], *link = NULL;
-    bool is_last_line = true;
+    bool is_last_line = false;
     int line_len, offset;
     
     int attr = get_paragraph_attr(&line_str, &link, &protocol, &offset);
@@ -452,7 +451,7 @@ static struct screen_line** paragraphs_to_lines(struct gemini_site *gem_site, ch
       line_len = strlen(line_str);
 
       if(line_len <= page_x - offset_x)
-        is_last_line = false;
+        is_last_line = true;
       else
         line_len = page_x - offset_x;
       
@@ -491,7 +490,7 @@ static struct screen_line** paragraphs_to_lines(struct gemini_site *gem_site, ch
       lines[num_lines - 1] = line;
 
       line_str += line_len;
-    } while(is_last_line);
+    } while(!is_last_line);
   }
 
   gem_site->lines_num = num_lines;
@@ -619,7 +618,7 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
   // search win
   form_driver(search_form, REQ_VALIDATION);
   char search_str[1024];
-  strcpy(search_str, trim_whitespaces(field_buffer(search_field[1], 0)));
+  memcpy(search_str, trim_whitespaces(field_buffer(search_field[1], 0)), sizeof(search_str));
 
   // form
   // unfortunately there's no way to just resize a form, we need to recreate it
@@ -746,7 +745,7 @@ start:
     }
   }
 
-  // if there's no link on the page, then go page down
+  // if there's no link on the page, then go page down and find a link in a new page
   if(is_pagedown) return;
   is_pagedown = true;
   pagedown(gem_site);
@@ -795,7 +794,7 @@ start:
     }
   }
   
-  // if there's no link on the page, then go page up
+  // if there's no link on the page, then go page up and find a link in a new page
   if(is_pageup) return;
   is_pageup = true;
   pageup(gem_site);
@@ -817,24 +816,21 @@ static char* handle_link_click(char *base_url, char *link) {
     free(new_url);
     return strdup(link);
   }
-
   else if(m_strncmp(link, "gopher://") == 0) {
-    info_bar_print("Gopher links are not supported");
+    wclear(info_bar_win);
+    wprintw(info_bar_win, "%s", link);
     goto nullret;
   }
- 
   else if(m_strncmp(link, "mailto:") == 0) {
     wclear(info_bar_win);
     wprintw(info_bar_win, "%s", link);
     goto nullret;
   }
-
   else if(m_strncmp(link, "https://") == 0 || m_strncmp(link, "http://") == 0) {
     wclear(info_bar_win);
     wprintw(info_bar_win, "%s", link);
     goto nullret;
   }
-  
   else {
     assert(new_url);
     int url_length = strlen(new_url);
@@ -959,7 +955,7 @@ static inline void print_to_dialog(char *format, char *str) {
   doupdate();
 }
 
-static char dialog_ask(struct gemini_site *gem_site, struct response *resp, char *options) {
+static char dialog_ask(struct gemini_site *gem_site, struct response *resp, const char *options) {
   int c;
 loop:
   c = getch();
@@ -981,7 +977,6 @@ loop:
 static int request_gem_site(char *gemini_url, struct gemini_tls *gem_tls, struct gemini_site *gem_site, struct response **resp) {
   
   bool was_redirected = false;
-
 func_start:
 
   if(!gemini_url)
@@ -989,23 +984,23 @@ func_start:
 
   info_bar_print("Connecting..."); 
   refresh_windows();          
-  
+
   struct response *new_resp = tls_request(gem_tls, gemini_url);
-  if(new_resp == NULL)
-    return 0;
+  if(new_resp == NULL) return 0;
 
   if(new_resp->error_message != NULL) {
     info_bar_print(new_resp->error_message);
     goto err;
   }
-  
+
   if(new_resp->body == NULL || new_resp->body[0] == '\0') {
-    info_bar_print("Empty body");
+    info_bar_print("Can't connect to the host");
     goto err;
   }
 
-  // TODO
   switch(new_resp->status_code) {
+    case CODE_SENSITIVE_INPUT:
+      field_opts_off(search_field[1], O_PUBLIC);
     case CODE_INPUT: 
       show_dialog();
       new_resp->body[strlen(new_resp->body) - 2] = '\0';
@@ -1054,11 +1049,14 @@ input_loop:
             goto input_loop;
           }
 
-          int gemini_url_len = strlen(gemini_url);
-          char *new_link = calloc(1, gemini_url_len + 1 + strlen(query) + 1);
-          strcpy(new_link, gemini_url);
-          strcat(new_link, "?");
-          strcat(new_link, query);
+          // add a query
+          int gemini_url_len = strlen(gemini_url), query_len = strlen(query);
+          char *new_link = calloc(1, gemini_url_len + 1 + query_len + 1);
+          
+          memcpy(new_link, gemini_url, gemini_url_len + 1);
+          new_link[gemini_url_len] = '?';
+          memcpy(new_link + gemini_url_len + 1, query, query_len + 1);
+          
           gemini_url = new_link;
           was_redirected = true;
           
@@ -1077,11 +1075,12 @@ input_loop:
           form_driver(search_form, c); 
           goto input_loop;
       }
-    
+   
+      // if it was sensitive input, then set the public input again
+      field_opts_on(search_field[1], O_PUBLIC);
       break;
-//      goto err;
-    case CODE_SENSITIVE_INPUT:             break;
-    case CODE_SUCCESS:
+    
+    case CODE_SUCCESS:;
       char *mime_type = get_mime_type(new_resp->body);
       if(!mime_type) {
         info_bar_print("No mimetype in response");
@@ -1094,7 +1093,7 @@ input_loop:
       }
       
       char *filename = strrchr(gemini_url, '/');
-      if(filename == NULL || strlen(filename) < 2) {
+      if(filename == NULL || strlen(filename) == 1) {
         info_bar_print("Should be a file, not a directory?");
         free(mime_type);
         goto err;
@@ -1104,19 +1103,19 @@ input_loop:
       }
       
       int header_offset = 1;
-      char *tmp = new_resp->body;
-      while(*tmp++ != '\n') header_offset++;
+      char *body_p = new_resp->body;
+      while(*body_p++ != '\n') header_offset++;
       
       char default_app[NAME_MAX + 1];
-      char selected;
+      char selected_opt;
 
       show_dialog();
       if(get_default_app(mime_type, default_app)) {
         print_to_dialog("If you want to open %s [o], if save [s], if nothing [n]", filename);
-        char options[] = {'o', 's', 'n'};
+        const char options[] = {'o', 's', 'n'};
         
-        selected = dialog_ask(gem_site, *resp, options);
-        if(selected == 'o') {
+        selected_opt = dialog_ask(gem_site, *resp, options);
+        if(selected_opt == 'o') {
           open_file(
               new_resp->body, 
               filename, 
@@ -1126,7 +1125,7 @@ input_loop:
            );
           info_bar_print("Opened a file");
         }
-        else if(selected == 's') {
+        else if(selected_opt == 's') {
           char save_path[PATH_MAX + 1];
           save_file(
               save_path, 
@@ -1143,10 +1142,9 @@ input_loop:
       }
       else {
         print_to_dialog("Not known mimetype. Do you want to save %s? [y/n]", filename);
-        char options[] = {'y', 'n'};
         
-        selected = dialog_ask(gem_site, *resp, options);
-        if(selected == 'y') {
+        selected_opt = dialog_ask(gem_site, *resp, yes_no_options);
+        if(selected_opt == 'y') {
           char save_path[PATH_MAX + 1];
           save_file(
               save_path, 
@@ -1193,8 +1191,7 @@ input_loop:
     
       info_bar_print("Redirecting..."); 
       refresh_windows();          
-      
-loop:        
+loop:;
       int ch = getch();
       if(ch == 'y' || ch == 'Y') {
         free_resp(new_resp);
@@ -1254,8 +1251,7 @@ loop:
       goto err;
     case CODE_BAD_REQUEST:
       info_bar_print("Bad request!"); 
-      goto err;
-    
+      goto err; 
     case CODE_CLIENT_CERTIFICATE_REQUIRED: 
       info_bar_print("Client cert required!"); 
       goto err;
@@ -1286,7 +1282,7 @@ loop:
   
   if(gem_site->lines)
     free_lines(gem_site);
-
+  
   *resp = new_resp;
 
   int paragraphs_num = 0;
@@ -1332,6 +1328,7 @@ loop:
 
 
 err:
+  field_opts_on(search_field[1], O_PUBLIC);
   free_resp(new_resp);
   if(was_redirected)
     free(gemini_url);
@@ -1405,10 +1402,9 @@ int main() {
           pageup(gem_site);
           break;
 
-        case 'B':
-          char *url = MAIN_GEM_SITE;
+        case 'B':;
           int res = request_gem_site(
-              url, 
+              MAIN_GEM_SITE, 
               gem_tls, 
               gem_site, 
               &resp 
@@ -1429,8 +1425,19 @@ int main() {
             current_mode = SCROLL_MODE;
     
           print_current_mode();
+          break;
+        
+        case 'S':
+        case 's':
+          if(!gem_site->url || resp == NULL) break;
+          
+          print_to_dialog("Do you want to save the gemsite? [y/n]", NULL);
+          char selected_opt = dialog_ask(gem_site, resp, yes_no_options);
+          if(selected_opt == 'y')
+            save_gemsite(gem_site->url, resp);
 
           break;
+
         // enter
         case 10:
           if(current_mode == LINKS_MODE) {
@@ -1480,6 +1487,7 @@ int main() {
       }
     }
 
+    // current_focus == SEARCH_FORM
     else {
       switch(ch) {
         case KEY_DOWN:

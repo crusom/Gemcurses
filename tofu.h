@@ -19,7 +19,6 @@ struct known_host;
   struct known_host *next;
 };
 
-
 int tofu_load_certs(struct known_host **host);
 int tofu_save_cert(struct known_host **host, char *hostname, char *fingerprint);
 enum tofu_check_results tofu_check_cert(struct known_host **host, char *hostname,

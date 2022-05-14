@@ -1,4 +1,4 @@
-#include <tofu.h>
+#include "tofu.h"
 
 static const char *host_filename = "known_hosts";
 
@@ -11,27 +11,21 @@ enum tofu_check_results tofu_check_cert(struct known_host **host, char *hostname
   struct known_host *tmp_host = *host;
 
   while(tmp_host) {
-
     // printf("HOST: %s", (tmp_host)->hostname);
     if(strcmp(tmp_host->hostname, hostname) != 0) {
       goto next;
     }
       
     if(strcmp(tmp_host->fingerprint, fingerprint) == 0) {
-//      printf("Valid fingerprint found!\n");
       return TOFU_OK;
     }
-//    TODO bad cert
-//    fprintf(stderr, "FINGERPRINT MISMATCH!");
     return TOFU_FINGERPRINT_MISMATCH;
-   
+
 next:
         tmp_host = tmp_host->next;
   }
-   
     
 save:
-//  printf("Fingerprint not found\n");
    
   tofu_save_cert(host, hostname, fingerprint);
   return TOFU_NEW_HOSTNAME;
@@ -53,7 +47,6 @@ int tofu_save_cert(struct known_host **host, char *hostname, char *fingerprint) 
   *host = tmp_host;
   return 0;
 }
-
 
 int tofu_load_certs(struct known_host **host) {
   FILE *f = fopen(host_filename, "r");
