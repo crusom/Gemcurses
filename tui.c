@@ -244,7 +244,7 @@ static void draw_scrollbar(struct gemini_site *gem_site) {
     y = 0;
   } 
   else if(gem_site->last_line_index == gem_site->lines_num) {
-    y = max_y - page_y;
+    y = max_y - 3 - scrollbar_height;
   }
   else {
     y = (float)(gem_site->first_line_index + 1) / (float)gem_site->lines_num;
