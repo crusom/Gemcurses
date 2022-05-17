@@ -1,7 +1,6 @@
 #include "tofu.h"
 
-static const char *host_filename = "known_hosts";
-
+static const char host_filename[] = "known_hosts";
 
 enum tofu_check_results tofu_check_cert(struct known_host **host, char *hostname, char *fingerprint) {
   if(host == NULL) {
@@ -61,9 +60,8 @@ int tofu_load_certs(struct known_host **host) {
   while(getline(&line, &n, f) != -1) {
     int ln = strlen(line);
     if(line[ln - 1] == '\n') {
-      line[ln - 1] = 0;
+      line[ln - 1] = '\0';
     }
-
 
     struct known_host *tmp_host = calloc(1, sizeof(struct known_host));
 

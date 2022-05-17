@@ -618,8 +618,11 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
   // search win
   form_driver(search_form, REQ_VALIDATION);
   char search_str[1024];
-  memcpy(search_str, trim_whitespaces(field_buffer(search_field[1], 0)), sizeof(search_str));
-
+  bool is_search_field_str = false;
+  if(field_buffer(search_field[1], 0) == NULL){
+    memcpy(search_str, trim_whitespaces(field_buffer(search_field[1], 0)), sizeof(search_str));
+    is_search_field_str = true;
+  }
   // form
   // unfortunately there's no way to just resize a form, we need to recreate it
   unpost_form(search_form);
@@ -627,7 +630,8 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
   free_field(search_field[1]);
   
   init_search_form(true);
-  set_field_buffer(search_field[1], 0, search_str);
+  if(is_search_field_str)
+    set_field_buffer(search_field[1], 0, search_str);
 
   // dialog panel
   wclear(dialog_win);
@@ -935,21 +939,22 @@ static void hide_dialog() {
   is_dialog_hidden = true;
 }
 
-static inline void print_to_dialog(char *format, char *str) {
+static inline void print_to_dialog(const char *format, ...) {
 
   if(dialog_message) {
     free(dialog_message);
     dialog_message = NULL;
   }
-  
-  if(str != NULL) {
-    dialog_message = malloc(strlen(format) + strlen(str) + 1);
-    sprintf(dialog_message, format, str);
-  }
-  else {
-    dialog_message = strdup(format);
-  }
-  
+
+  va_list args;
+  va_start(args, format);
+  int len = vsnprintf(NULL, 0, format, args);
+  va_start(args, format);
+
+  dialog_message = malloc(len + 1);
+  vsprintf(dialog_message, format, args);
+  va_end(args);
+
   wprintw(dialog_subwin, "%s", dialog_message);
   update_panels();
   doupdate();
@@ -1185,7 +1190,7 @@ input_loop:
         print_to_dialog("Do you want to redirect to: \n%s? [y/n]", new_link);
       }
       else {
-        print_to_dialog("Can't redirect to a new url.", NULL);
+        print_to_dialog("%s", "Can't redirect to a new url.");
         goto err;
       }
     
@@ -1431,7 +1436,7 @@ int main() {
         case 's':
           if(!gem_site->url || resp == NULL) break;
           
-          print_to_dialog("Do you want to save the gemsite? [y/n]", NULL);
+          print_to_dialog("%s", "Do you want to save the gemsite? [y/n]");
           char selected_opt = dialog_ask(gem_site, resp, yes_no_options);
           if(selected_opt == 'y')
             save_gemsite(gem_site->url, resp);

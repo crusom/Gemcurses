@@ -14,7 +14,7 @@
 #include <stdbool.h>
 #include <assert.h>
 
-#include <tls.h>
+#include "tls.h"
 
 int get_valid_query(char **query);
 int get_default_app(char *mime_type, char default_app[NAME_MAX + 1]);
