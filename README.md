@@ -13,6 +13,7 @@ A Gemini client, written in C using ncurses
 | A              | bookmark current gemsite       |
 | PgUp/PgDn      | go page up or page down        |
 | mouse scroll   | scroll                         |
+
 Note that some keys are *uppercase*
 
 ![The Antenna gemsite and bookmarks dialog](/images/bookmarks.png "Example screenshot1")
