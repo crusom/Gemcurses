@@ -1098,7 +1098,7 @@ loop:
     if(tolower((unsigned char)c) == options[i])
       return options[i];
   }
-  if(options == "") return '.';
+  if(options[0] == '\0') return '.';
   
   goto loop;
 }
