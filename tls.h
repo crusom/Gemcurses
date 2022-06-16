@@ -6,12 +6,6 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
-#include <string.h>
-#include <unistd.h>
-#include <ctype.h>
-#include <stdio.h>
-#include <assert.h>
-#include <stdbool.h>
 
 #include "tofu.h"
 

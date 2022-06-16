@@ -1,11 +1,15 @@
 #include "tofu.h"
 
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+
 static const char host_filename[] = "known_hosts";
 
 enum tofu_check_results tofu_check_cert(struct known_host **host, char *hostname, char *fingerprint) {
-  if(host == NULL) {
+  if(host == NULL)
     goto save;
-  }
 
   struct known_host *tmp_host = *host;
 
@@ -33,7 +37,7 @@ save:
 int tofu_save_cert(struct known_host **host, char *hostname, char *fingerprint) {
   FILE *f = fopen(host_filename, "a");
   if(f == NULL)
-    return -1;
+    return 0;
   
   fprintf(f, "%s %s %s\n", hostname,
              "SHA-512", fingerprint);
@@ -44,14 +48,13 @@ int tofu_save_cert(struct known_host **host, char *hostname, char *fingerprint) 
   tmp_host->fingerprint = strdup(fingerprint);
   tmp_host->next = *host;
   *host = tmp_host;
-  return 0;
+  return 1;
 }
 
 int tofu_load_certs(struct known_host **host) {
   FILE *f = fopen(host_filename, "r");
-  if(f == NULL) {
-    return -1;
-  }
+  if(f == NULL)
+    return 0;
     
   size_t n = 0;
   int lineno = 1;
@@ -89,7 +92,6 @@ int tofu_load_certs(struct known_host **host) {
   assert(*host);
 
   free(line);
-  return 0;
-
+  return 1;
 }
 

@@ -1,11 +1,6 @@
 #ifndef TLS_TOFU_H
 #define TLS_TOFU_H
 
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <assert.h>
-
 enum tofu_check_results {
   TOFU_OK,
   TOFU_NEW_HOSTNAME,

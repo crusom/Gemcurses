@@ -8,7 +8,11 @@ A Gemini client, written in C using ncurses
 | q              | change to link-mode/scroll-mode|
 | enter          | go to a link                   |  
 | B              | go to the defined main gemsite (antenna) |
+| P              | show bookmarks dialog          |
+| A              | bookmark current gemsite       |
 | PgUp/PgDn      | go page up or page down        |
 | mouse scroll   | scroll                         |
+Note that some keys are *uppercase*
 
-![The antenna gemsite showed in Gemcurses](/images/antenna.png "An example image of Gemcurses")
+![The Antenna gemsite and bookmarks dialog](/images/bookmarks.png "Example screenshot1")
+![The Astrobotany gemsite](/images/astrobotany.png "Example screenshot2")

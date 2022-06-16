@@ -5,10 +5,12 @@
 #include <openssl/x509_vfy.h>
 #include <openssl/pem.h>
 #include <openssl/opensslv.h>
+#include <stdbool.h>
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <assert.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/poll.h>
@@ -88,16 +90,16 @@ static void ssl_info_callback(const SSL * ssl, int where, int ret){
   if(where & SSL_CB_HANDSHAKE_START){
     SSL_SESSION *session = SSL_get_session(ssl);
     if(session) {
-      printf("handshake begin %p %p %ld %ld\n",ssl,session,SSL_SESSION_get_time(session), SSL_SESSION_get_timeout(session));
+      printf("handshake begin %p %p %ld %ld\n", (void*)ssl, (void*)session, SSL_SESSION_get_time(session), SSL_SESSION_get_timeout(session));
     }
     else {
-      printf("handshake begin %p %p \n",ssl,session);
+      printf("handshake begin %p %p \n", (void*)ssl, (void*)session);
     }
   }
 
   if(where & SSL_CB_HANDSHAKE_DONE){
     SSL_SESSION * session = SSL_get_session(ssl);
-    printf("handshake done %p reused %d %ld %ld\n",session,SSL_session_reused((SSL*)ssl),
+    printf("handshake done %p reused %d %ld %ld\n",(void*)session, SSL_session_reused((SSL*)ssl),
                                   SSL_SESSION_get_time(session), SSL_SESSION_get_timeout(session));
     
     SSL_SESSION_print_fp(stdout,session);
@@ -121,7 +123,7 @@ static SSL_SESSION *tls_get_session(struct gemini_tls *gem_tls, const char *host
 
 }
 
-int parse_url(const char *error_message, char *hostname, char **host_resource, char port[6]) {
+int parse_url(const char **error_message, char *hostname, char **host_resource, char port[6]) {
   int gemini_scheme_length = strlen(GEMINI_SCHEME);
   // at first delete gemini scheme from hostname if it is included
   if(strncmp(hostname, GEMINI_SCHEME, gemini_scheme_length) == 0) {
@@ -131,7 +133,9 @@ int parse_url(const char *error_message, char *hostname, char **host_resource, c
   
   // then check if there's port number included
   char *p_port = strchr(hostname, ':');
-  if(p_port != NULL) {
+  char *p_slash = strchr(hostname, '/');
+  // ':' may be included in url, so check if it's after domain name and before any dir
+  if(p_port != NULL && p_port < p_slash) {
     port[0] = ':';
     p_port++;
     int i = 1;
@@ -141,7 +145,7 @@ int parse_url(const char *error_message, char *hostname, char **host_resource, c
         if(i < 6)
           port[i] = *p_port;
         else {
-          error_message = "ERROR: invalid port number\n";
+          *error_message = "ERROR: invalid port number\n";
           return 0;
         }
         p_port++;
@@ -153,7 +157,7 @@ int parse_url(const char *error_message, char *hostname, char **host_resource, c
     }
 
     if(strlen(port) == 1){
-      error_message = "ERROR: Invalid port number\n";
+      *error_message = "ERROR: Invalid port number\n";
       return 0;
     }
 
@@ -348,7 +352,7 @@ struct gemini_tls* init_tls(int flag) {
   gem_tls->session_indx = 0;
   gem_tls->session = NULL;
   gem_tls->host = NULL;
-  if(tofu_load_certs(&gem_tls->host) != 0)
+  if(!tofu_load_certs(&gem_tls->host))
     gem_tls->host = NULL;
 
   init_openssl_library();
@@ -452,8 +456,8 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   if(hostname == NULL)
     alloc_error();
   
-  if(!parse_url(resp->error_message, hostname, &host_resource, host_port)){
-    resp->error_message = "ERROR: cant parse url";
+  if(!parse_url(&resp->error_message, hostname, &host_resource, host_port)){
+//    resp->error_message = "ERROR: cant parse url";
     goto error;
   }
 
@@ -513,7 +517,7 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
     fd.fd = fdSocket;
     fd.events = POLLOUT;
 
-    res = poll(&fd, 1, 1000);
+    res = poll(&fd, 1, 2000);
     if(res == 0){
       resp->error_message = "ERROR: timeout\n"; 
       goto error;
@@ -628,6 +632,7 @@ int tls_read(struct gemini_tls *gem_tls, struct response *resp) {
   res[bptr->length] = '\0';
   resp->body_size = bptr->length;
   resp->body = res;
+  
   return 1;
 }
 

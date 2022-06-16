@@ -96,6 +96,18 @@ char *get_mime_type(char *str) {
   return res; 
 }
 
+void open_link(char *link) {
+  pid_t pid = fork();
+  if(pid == 0) {
+    int null_fd = open("/dev/null", O_WRONLY);
+    dup2(null_fd, 2);
+    dup2(null_fd, 2);
+    
+    execlp("xdg-open", "xdg-open", link, (char *)0);
+    exit(1);
+  }
+}
+
 int get_default_app(char *mime_type, char default_app[NAME_MAX + 1]) {
   char buf[NAME_MAX + 1];
   char cache_path[PATH_MAX + 1];
@@ -178,7 +190,6 @@ err:
 }
 
 char *get_cache_path(char cache_path[PATH_MAX + 1]) {
-
   char *home = getenv("HOME");
   // no home? :/
   if(home == NULL)
@@ -290,6 +301,11 @@ int open_file(char *buf, char *filename, char *app, int size, int offset) {
 
   exec_app(app, save_path);
   return 1;
+}
+
+inline void free_char_pp(char **p, int n) {
+  for(int i = 0; i < n; i++)
+    free(p[i]);
 }
 
 // TODO
