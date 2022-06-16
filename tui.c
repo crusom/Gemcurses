@@ -1654,7 +1654,7 @@ int main() {
         true
      );
   }
-  bookmarks.last_line_index = -1;
+  bookmarks.selected_link_index = -1;
   // mouse support
   MEVENT event;
   mousemask(BUTTON5_PRESSED | BUTTON4_PRESSED, NULL);
@@ -1834,7 +1834,6 @@ int main() {
             bookmarks_links = realloc(bookmarks_links, sizeof(char*) * num_bookmarks_links);
             break;
           }
-
 
           else { 
             num_bookmarks_links++;
