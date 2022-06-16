@@ -9,6 +9,7 @@ A Gemini client, written in C using ncurses
 | enter          | go to a link                   |  
 | B              | go to the defined main gemsite (antenna) |
 | P              | show bookmarks dialog          |
+| C              | show url of the selected link  |
 | A              | bookmark current gemsite       |
 | PgUp/PgDn      | go page up or page down        |
 | mouse scroll   | scroll                         |
