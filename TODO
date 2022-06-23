@@ -4,7 +4,5 @@ To add:
   -Some switch if user wants to disable/enable sending certificates(?)
 
 to fix:
-  -urls like warmedal.se and warmedal.se/ should be the same in bookmarks
 To test:
   -test input (gemini://gemini.ctrl-c.club/~stack/gemlog/2021-11-30.noncompliant.gmi)
-

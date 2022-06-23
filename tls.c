@@ -1,31 +1,21 @@
-#include <openssl/bio.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-#include <openssl/x509.h>
-#include <openssl/x509_vfy.h>
-#include <openssl/pem.h>
-#include <openssl/opensslv.h>
 #include <stdbool.h>
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <assert.h>
 #include <unistd.h>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/poll.h>
-#include <fcntl.h>
+#include <netdb.h>
 
 #include "tls.h"
 
 #define GEMINI_SCHEME "gemini://"
-#define HOST_PORT ":1965"
-#define HOST_RESOURCE "/"
+#define DEFAULT_HOST_PORT "1965"
 #define CLRN "\r\n"
-#define SESSION_NUM 30
 
-#define CERT_FILENAME "key.pem" 
-#define KEY_FILENAME  "cert.pem"
+#define KEY_FILENAME "key.pem" 
+#define CERT_FILENAME  "cert.pem"
 
 enum {
   TLS_DEBUGGING = 1 << 0,
@@ -59,7 +49,7 @@ static int ssl_session_callback(SSL *ssl, SSL_SESSION *session) {
   struct gemini_tls *gem_tls;
 
   if((gem_tls = (struct gemini_tls*)SSL_get_ex_data(ssl, 0)) == NULL) {
-    fprintf(stderr, "ERROR: cant get ex data");
+    fprintf(stderr, "ERROR: Can't get ex data");
     exit(EXIT_FAILURE);
   }
   
@@ -67,7 +57,6 @@ static int ssl_session_callback(SSL *ssl, SSL_SESSION *session) {
   
   while(sess_p) {
     if(strcmp(gem_tls->cur_hostname, sess_p->hostname) == 0){    
-//      SSL_SESSION_free(sess_p->session);
       sess_p->session = session;
       return 0;
     }
@@ -120,7 +109,6 @@ static SSL_SESSION *tls_get_session(struct gemini_tls *gem_tls, const char *host
   }
 
   return NULL;
-
 }
 
 int parse_url(const char **error_message, char *hostname, char **host_resource, char port[6]) {
@@ -136,38 +124,26 @@ int parse_url(const char **error_message, char *hostname, char **host_resource, 
   char *p_slash = strchr(hostname, '/');
   // ':' may be included in url, so check if it's after domain name and before any dir
   if(p_port != NULL && p_port < p_slash) {
-    port[0] = ':';
     p_port++;
-    int i = 1;
+    int i = 0;
 
-    while(*p_port){
-      if(isdigit(*p_port)) {
-        if(i < 6)
-          port[i] = *p_port;
-        else {
-          *error_message = "ERROR: invalid port number\n";
-          return 0;
-        }
-        p_port++;
-        i++;
-      }
-      else {
+    for(i = 0; *p_port && i < 5; p_port++, i++){
+      if(isdigit(*p_port)) 
+        port[i] = *p_port;
+      else
         break;
-      }
     }
 
-    if(strlen(port) == 1){
+    if(i <= 1){
       *error_message = "ERROR: Invalid port number\n";
       return 0;
     }
 
     // and cut the port number from the hostname
-    memmove(p_port - i, p_port, strlen(p_port) + 1);
+    memmove(p_port - i - 1, p_port, strlen(p_port) + 1);
   }
   else {
-    // default port
-    static const char default_port[] = ":1965";
-    memmove(port, default_port, sizeof(default_port));
+    strcpy(port, DEFAULT_HOST_PORT);
   }
 
   // get the resource if included and cut it from the hostname
@@ -190,8 +166,6 @@ int parse_url(const char **error_message, char *hostname, char **host_resource, 
 
     return 1;
 }
-
-//static int tls_handle_response(char *resp) {}
 
 static int tls_hex_string(const unsigned char *in, size_t inlen, char **out,
                           size_t *outlen) {
@@ -225,7 +199,7 @@ static int tls_hex_string(const unsigned char *in, size_t inlen, char **out,
   return 0;
 }
 
-static int tls_get_peer_fingerprint(SSL_CTX *ctx, X509 *cert, char **hash) {
+static int tls_get_peer_fingerprint(X509 *cert, char **hash) {
   unsigned char d[EVP_MAX_MD_SIZE];
   char *dhex = NULL;
   unsigned int dlen;
@@ -235,12 +209,12 @@ static int tls_get_peer_fingerprint(SSL_CTX *ctx, X509 *cert, char **hash) {
     return -1;
 
   if (X509_digest(cert, EVP_sha256(), d, &dlen) != 1) {
-    fprintf(stderr, "ERROR: cant get cert digest\n");
+    fprintf(stderr, "ERROR: Can't get cert digest\n");
     goto err;
   }
 
   if (tls_hex_string(d, dlen, &dhex, NULL) != 0) {
-    fprintf(stderr, "ERROR: cant get tls hex string\n");
+    fprintf(stderr, "ERROR: Can't get tls hex string\n");
     goto err;
   }
 
@@ -263,28 +237,28 @@ static int tls_create_cert() {
   ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
   
   if(!ctx){ 
-    fprintf(stderr, "ERROR: cant create EVP context\n");
+    fprintf(stderr, "ERROR: Can't create EVP context\n");
     return -1;
   }
      
   if(EVP_PKEY_keygen_init(ctx) <= 0) {
-    fprintf(stderr, "ERROR: cant init EVP\n");
+    fprintf(stderr, "ERROR: Can't init EVP\n");
     return -1;
   }       
 
   if(EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0) {
-    fprintf(stderr, "ERROR: cant set RSA bits\n");
+    fprintf(stderr, "ERROR: Can't set RSA bits\n");
     return -1;
   }
 
   if(EVP_PKEY_keygen(ctx, &pkey) <= 0){
-    fprintf(stderr, "ERROR: cant generate RSA key\n");
+    fprintf(stderr, "ERROR: Can't generate RSA key\n");
     return -1;
   }
 
   X509 *x509 = X509_new();
   if(!x509) {
-    fprintf(stderr, "ERROR: cant create x509 structure\n");
+    fprintf(stderr, "ERROR: Can't create x509 structure\n");
     return -1;
   }
 
@@ -304,13 +278,13 @@ static int tls_create_cert() {
 
   X509_set_issuer_name(x509, name);
   if(!X509_sign(x509, pkey, EVP_sha256())) {
-    fprintf(stderr, "ERROR: cant sign certificate\n");
+    fprintf(stderr, "ERROR: Can't sign certificate\n");
     return -1;
   }
 
   FILE *f = fopen(KEY_FILENAME, "wb");
   if(!f) {
-    fprintf(stderr, "ERROR: cant open private key file for writing\n");
+    fprintf(stderr, "ERROR: Can't open private key file for writing\n");
     return -1;
   }
  
@@ -318,22 +292,21 @@ static int tls_create_cert() {
   fclose(f);
 
   if(!ret) {
-    fprintf(stderr, "ERROR: cant write private key to file\n");
+    fprintf(stderr, "ERROR: Can't write private key to file\n");
     return -1;
   }
 
   f = fopen(CERT_FILENAME, "wb");
   if(!f) {
-    fprintf(stderr, "ERROR: cant open cert file for writing\n");
+    fprintf(stderr, "ERROR: Can't open cert file for writing\n");
     return -1;
   }
-
 
   ret = PEM_write_X509(f, x509);
   fclose(f);
   
   if(!ret) {
-    fprintf(stderr, "ERROR: cant write cert to file\n");
+    fprintf(stderr, "ERROR: Can't write cert to file\n");
     return -1;
   }
 
@@ -345,9 +318,8 @@ struct gemini_tls* init_tls(int flag) {
   struct gemini_tls* gem_tls = (struct gemini_tls*) calloc(1, sizeof(struct gemini_tls));
   int res;
 
-  if(!gem_tls) {
+  if(!gem_tls)
     return NULL;
-  }
 
   gem_tls->session_indx = 0;
   gem_tls->session = NULL;
@@ -359,13 +331,13 @@ struct gemini_tls* init_tls(int flag) {
   
   const SSL_METHOD* method = TLS_client_method();
   if(method == NULL) {
-    fprintf(stderr, "ERROR: cant set SSL method\n");
+    fprintf(stderr, "ERROR: Can't set SSL method\n");
     goto cleanup;
   }
 
   gem_tls->ctx = SSL_CTX_new(method);
   if(gem_tls->ctx == NULL) {
-    fprintf(stderr, "ERROR: cant create new context\n");
+    fprintf(stderr, "ERROR: Can't create new context\n");
     goto cleanup;
   }
 
@@ -379,11 +351,11 @@ struct gemini_tls* init_tls(int flag) {
   }
 
   if(SSL_CTX_use_certificate_file(gem_tls->ctx, CERT_FILENAME, SSL_FILETYPE_PEM) != 1) {
-    fprintf(stderr, "ERROR: cant load client cert\n");
+    fprintf(stderr, "ERROR: Can't load client cert\n");
     goto cleanup;
   }
   if(SSL_CTX_use_PrivateKey_file(gem_tls->ctx, KEY_FILENAME, SSL_FILETYPE_PEM) != 1) {
-    fprintf(stderr, "ERROR: cant load client private key\n");
+    fprintf(stderr, "ERROR: Can't load client private key\n");
     goto cleanup;  
   }
 
@@ -393,41 +365,39 @@ struct gemini_tls* init_tls(int flag) {
   if((flag & TLS_DEBUGGING) == 1)
     SSL_CTX_set_info_callback(gem_tls->ctx, ssl_info_callback);
   
-
   SSL_CTX_set_verify_depth(gem_tls->ctx, 4);
-
   // disable SSL cause its obolete and dangerous
   const long flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
   SSL_CTX_set_options(gem_tls->ctx, flags);
 
   gem_tls->bio_web = BIO_new_ssl_connect(gem_tls->ctx);
   if(gem_tls->bio_web == NULL) {
-    fprintf(stderr, "ERROR: cant create bio new ssl connect\n");
+    fprintf(stderr, "ERROR: Can't create bio new ssl connect\n");
     goto cleanup;
   }
   
   gem_tls->bio_out = BIO_new_fp(stdout, BIO_NOCLOSE);
   if(gem_tls->bio_out == NULL) {
-    fprintf(stderr, "ERROR: cant create new fp\n");
+    fprintf(stderr, "ERROR: Can't create new fp\n");
     goto cleanup;
   }
  
   gem_tls->bio_mem = BIO_new(BIO_s_mem());
   if(gem_tls->bio_mem == NULL) {
-    fprintf(stderr, "ERROR: cant create new fp\n");
+    fprintf(stderr, "ERROR: Can't create new fp\n");
     goto cleanup;
   }
 
   BIO_get_ssl(gem_tls->bio_web, &gem_tls->ssl);
   if(gem_tls->ssl == NULL)  {
-    fprintf(stderr, "ERROR: cant get ssl\n");
+    fprintf(stderr, "ERROR: Can't get ssl\n");
     goto cleanup;
   }
   
   const char* const PREFERRED_CIPHERS = "HIGH:!aNULL:!kRSA:!PSK:!SRP:!MD5:!RC4";
   res = SSL_set_cipher_list(gem_tls->ssl, PREFERRED_CIPHERS);
   if(res == 0) {
-    fprintf(stderr, "ERROR: cant set cipher list\n");
+    fprintf(stderr, "ERROR: Can't set cipher list\n");
     goto cleanup;
   }
 
@@ -442,104 +412,109 @@ cleanup:
 }
 
 inline static void alloc_error() {
-  fprintf(stderr, "ERROR: cant allocate memory\n");
+  fprintf(stderr, "ERROR: Can't allocate memory\n");
   exit(EXIT_FAILURE);
 }
+
+const char *tls_get_error(SSL *ssl, int res) {
+// https://www.openssl.org/docs/man1.1.1/man3/SSL_get_error.html
+  switch(SSL_get_error(ssl, res)) {
+    case SSL_ERROR_NONE: return "SSL_ERROR_NONE\n";
+    case SSL_ERROR_ZERO_RETURN : return "SSL_ERROR_ZERO_RETURN\n";
+    case SSL_ERROR_WANT_READ: return "SSL_ERROR_WANT_READ\n";
+    case SSL_ERROR_WANT_WRITE: return "SSL_ERROR_WANT_WRITE\n";
+    case SSL_ERROR_WANT_CONNECT: return "SSL_ERROR_WANT_CONNECT\n";
+    case SSL_ERROR_WANT_ACCEPT: return "SSL_ERROR_WANT_ACCEPT\n";
+    case SSL_ERROR_WANT_X509_LOOKUP: return "SSL_ERROR_WANT_X509_LOOKUP\n";
+    case SSL_ERROR_WANT_ASYNC: return  "SSL_ERROR_WANT_ASYNC\n";
+    case SSL_ERROR_WANT_ASYNC_JOB: return "SSL_ERROR_WANT_ASYNC_JOB\n";
+    case SSL_ERROR_WANT_CLIENT_HELLO_CB: return "SSL_ERROR_WANT_CLIENT_HELLO_CB\n";
+    case SSL_ERROR_SYSCALL: return "SSL_ERROR_SYSCALL\n";
+    case SSL_ERROR_SSL: return "SSL_ERROR_SSL\n";
+    default: return "Unknown SSL error\n";
+  }
+}
+
+
+
 
 int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp) {
   long res = 1;
   int return_val = 1;
-  char *hostname = strdup(h), host_port[6] = {0};
-  char *hostname_with_portn = NULL, *url = NULL;
+  char *hostname = strdup(h);
   char *host_resource = NULL, *hash = NULL;
+  char hostname_with_portn[1024], host_port[6] = {0};
 
   if(hostname == NULL)
     alloc_error();
   
-  if(!parse_url(&resp->error_message, hostname, &host_resource, host_port)){
-//    resp->error_message = "ERROR: cant parse url";
+  if(!parse_url(&resp->error_message, hostname, &host_resource, host_port))
     goto error;
-  }
 
-  if(host_resource == NULL)
-    alloc_error();
-
-//  printf("host name: %s\n", hostname);
-//  printf("host resource: %s\n", host_resource);
-//  printf("port number: %s\n", host_port);
-  int hostname_len = strlen(hostname), host_port_len = strlen(host_port);
-
-  hostname_with_portn = malloc(hostname_len + host_port_len + 1);
-  if(hostname_with_portn == NULL) alloc_error();
-  memcpy(hostname_with_portn, hostname, hostname_len);
-  memcpy(hostname_with_portn + hostname_len, host_port, host_port_len + 1);
+  snprintf(
+    hostname_with_portn,
+    sizeof(hostname_with_portn),
+    "%s:%s", hostname, host_port
+  );
 
   gem_tls->cur_hostname = strdup(hostname_with_portn);
 
-  res = BIO_set_conn_hostname(gem_tls->bio_web, hostname_with_portn);
-  if(res == 0) {
-    resp->error_message = "ERROR: cant set conn hostname\n";
+  struct addrinfo hints = {
+    .ai_family = AF_UNSPEC,
+    .ai_socktype = SOCK_STREAM,
+    .ai_protocol = IPPROTO_TCP
+  }, *result;
+
+  int fd = -1;
+  struct timeval tv = {0};
+  tv.tv_sec = 2;
+
+  if((res = getaddrinfo(hostname, host_port, &hints, &result)) != 0) {
+    resp->error_message = "ERROR: Cant get address info\n";
+//    fprintf(stderr, "Cant set conn hostname: %s\n", gai_strerror(res));
+    goto error;
+  }
+
+  struct addrinfo *it;
+  int err = 0;
+  for(it = result; it && err != EINTR; it = it->ai_next) {
+    if((fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol)) == -1) {
+      err = errno;
+      continue;
+    }
+    if(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0 &&
+       setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0 &&
+       connect(fd, it->ai_addr, it->ai_addrlen) == 0) {
+      break;
+    }
+    err = errno;
+    close(fd);
+    fd = -1;
+  }
+
+  freeaddrinfo(result);
+
+  if(fd == -1) {
+    resp->error_message = "ERROR: Can't connect\n";
     goto error;
   }
 
   res = SSL_set_tlsext_host_name(gem_tls->ssl, hostname);
   if(res == 0) {
-    resp->error_message = "ERROR: cant set hostname\n";
+    resp->error_message = "ERROR: Can't set hostname\n";
     goto error;
   }
 
   SSL_SESSION *session;
-  if((session = tls_get_session(gem_tls, hostname)) != NULL) {
+  if((session = tls_get_session(gem_tls, hostname_with_portn)) != NULL) {
     SSL_set_session(gem_tls->ssl, session);
   }
 
-  int fdSocket;
-  fd_set connectionfds;
-  // set non-blocking socket for poll()
-  BIO_set_nbio(gem_tls->bio_web, 1);
+  SSL_set_fd(gem_tls->ssl, fd);
   
-  res = BIO_do_connect(gem_tls->bio_web);
-  if((res <= 0) && !BIO_should_retry(gem_tls->bio_web)) {
-    resp->error_message = "ERROR: cant connect\n";
-    goto error;
-  }
- 
-  if(BIO_get_fd(gem_tls->bio_web, &fdSocket) < 0) {
-    resp->error_message = "ERROR: cant get fd\n";
-    goto error;
-  }
-  
-  if(res <= 0) {
-    FD_ZERO(&connectionfds);
-    FD_SET(fdSocket, &connectionfds);
-
-    struct pollfd fd;
-    fd.fd = fdSocket;
-    fd.events = POLLOUT;
-
-    res = poll(&fd, 1, 2000);
-    if(res == 0){
-      resp->error_message = "ERROR: timeout\n"; 
-      goto error;
-    }
-  }
-
-  // this busy loop is bad for performance but i have no idea
-  // how to do it efficiently.
-  // (blocking sockets seem efficient but then i can't use poll())
-  // without flushing in some cases we may be stuck forever
-  while(BIO_should_retry(gem_tls->bio_web) && BIO_flush(gem_tls->bio_web) > 0) {
-    res = BIO_do_connect(gem_tls->bio_web);
-  }
-  
-  if(res <= 0) {
-    resp->error_message = "ERROR: cant connect to the peer\n";
-    goto error;
-  }
-
   res = BIO_do_handshake(gem_tls->bio_web);
-  if(res == 0) {
-    resp->error_message = "ERROR: cant do handshake\n";
+  if(res <= 0) {
+    resp->error_message = tls_get_error(gem_tls->ssl, res);;
     goto error;
   }
 
@@ -550,11 +525,11 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
 
   X509* cert = SSL_get_peer_certificate(gem_tls->ssl);
   if(cert == NULL) {
-    resp->error_message = "ERROR: cant get peer cert\n";
+    resp->error_message = "ERROR: Can't get peer cert\n";
     goto error;
   }
    
-  tls_get_peer_fingerprint(gem_tls->ctx, cert, &hash);
+  tls_get_peer_fingerprint(cert, &hash);
   // there may be different certs on different ports and subdomains
   resp->cert_result = tofu_check_cert(&gem_tls->host, hostname_with_portn, hash); 
   // printf("CERT: %s", hash);
@@ -562,15 +537,13 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
     X509_free(cert); 
   }
 
-  int url_len = strlen("gemini://") + strlen(hostname) + strlen(host_resource) + strlen(CLRN) + 1;
-  url = (char*)malloc(url_len);
-  
-  memcpy(url, "gemini://", sizeof("gemini://"));
-  strcat(url, hostname);
-  strcat(url, host_resource);
-  strcat(url, CLRN);
-  url[url_len - 1] = '\0';
-  
+  char url[1024];
+  unsigned int url_len = snprintf(url, sizeof(url), (GEMINI_SCHEME "%s%s" CLRN), hostname, host_resource);
+  if(url_len > sizeof(url)) {
+    resp->error_message = "Too long url\n";
+    goto error;
+  }
+
   BIO_puts(gem_tls->bio_web, url);
   BIO_puts(gem_tls->bio_out, "\n");
   
@@ -585,10 +558,6 @@ cleanup:
     free(hostname);
   if(host_resource != NULL)
     free(host_resource);
-  if(hostname_with_portn != NULL)
-    free(hostname_with_portn); 
-  if(url != NULL)
-    free(url);
   if(hash != NULL)
     free(hash);
  
@@ -607,6 +576,13 @@ int tls_read(struct gemini_tls *gem_tls, struct response *resp) {
     if(len > 0){
       BIO_write(gem_tls->bio_mem, buff, len);
       written += len;
+    }
+    else if(len == 0) {
+      break;
+    }
+    else {
+      resp->error_message = tls_get_error(gem_tls->ssl, len);
+      break;
     }
   } while (len > 0 || BIO_should_retry(gem_tls->bio_web));
 

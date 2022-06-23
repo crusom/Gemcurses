@@ -16,7 +16,8 @@
 typedef void (*println_func_def) (WINDOW *, struct screen_line*, int x, int y);
 
 WINDOW *main_win, *search_bar_win, *info_bar_win, *mode_win, *isbookmarked_win;
-PANEL  *dialog_panel; WINDOW *dialog_win, *dialog_subwin, *dialog_title_win;
+PANEL  *dialog_panel; 
+WINDOW *dialog_win, *dialog_subwin, *dialog_title_win;
 FIELD  *search_field[3];
 FORM   *search_form;
 
@@ -27,6 +28,8 @@ const int offset_x = 1;
 
 int max_x, max_y;
 int main_win_x, main_win_y;
+
+int dialog_win_x, dialog_win_y;
 int dialog_subwin_x, dialog_subwin_y;
 const char *info_message;
 char *dialog_message = NULL;
@@ -58,25 +61,26 @@ const char yes_no_options[] = {'y', 'n'};
 bool is_dialog_hidden = true;
 struct gemini_site bookmarks;
 
-struct gemini_history {
-  struct {
-    struct gemini_site **gem_sites;
-    int index;
-    int size;
-  } content_cache;
-  
-  struct {
-    char **urls;
-    int size;
-  } url_history;
-};
+// TODO ?
+//struct gemini_history {
+//  struct {
+//    struct gemini_site **gem_sites;
+//    int index;
+//    int size;
+//  } content_cache;
+//  
+//  struct {
+//    char **urls;
+//    int size;
+//  } url_history;
+//};
 
 static void refresh_windows() {
-  if(wnoutrefresh(info_bar_win) == ERR)   goto err;
-  if(wnoutrefresh(mode_win) == ERR)       goto err;
-  if(wnoutrefresh(main_win) == ERR)       goto err;
+  if(wnoutrefresh(info_bar_win)     == ERR) goto err;
+  if(wnoutrefresh(mode_win)         == ERR) goto err;
+  if(wnoutrefresh(main_win)         == ERR) goto err;
   if(wnoutrefresh(isbookmarked_win) == ERR) goto err;
-  if(wnoutrefresh(search_bar_win) == ERR) goto err;
+  if(wnoutrefresh(search_bar_win)   == ERR) goto err;
 
   doupdate();
   return;
@@ -100,20 +104,20 @@ static void init_colors() {
   // '=>'
   init_pair(LINK_COLOR, COLOR_YELLOW, COLOR_BLACK);
   init_pair(QUOTE_COLOR, COLOR_BLACK, COLOR_WHITE);
-
+  // dialog borders
   init_pair(DIALOG_COLOR, COLOR_RED, COLOR_BLACK);
-  
 }
 
 static void init_dialog_panel() {
-  int lines = max_y * (6.0 / 8.0);
-  int cols  = max_x * (6.0 / 8.0);
-  dialog_subwin_x = cols - 2;
-  dialog_subwin_y = lines - 2 - 2;
+  dialog_win_x = max_x * (6.0 / 8.0);
+  dialog_win_y = max_y * (6.0 / 8.0);
 
-  dialog_win       = newwin(lines, cols, max_y / 8, max_x / 8);
-  dialog_subwin    = derwin(dialog_win, dialog_subwin_y, dialog_subwin_x, 1 + 2, 1);
-  dialog_title_win = derwin(dialog_win, 2, dialog_subwin_x, 1, 1);
+  dialog_subwin_x = dialog_win_x - 2 - 1;
+  dialog_subwin_y = dialog_win_y - 2 - 2;
+
+  dialog_win       = newwin(dialog_win_y, dialog_win_x, max_y / 8, max_x / 8);
+  dialog_subwin    = derwin(dialog_win, dialog_subwin_y, dialog_win_x - 2, 1 + 2, 1);
+  dialog_title_win = derwin(dialog_win, 2, dialog_win_x - 2, 1, 1);
 
   box(dialog_win, 0, 0);
   keypad(dialog_win, true);
@@ -226,6 +230,7 @@ static void free_paragraphs(char **paragraphs, int paragraphs_num) {
   for(int i = 0; i < paragraphs_num; i++)
     if(paragraphs[i])
       free(paragraphs[i]);
+ 
   free(paragraphs);
 }
 
@@ -671,8 +676,8 @@ static void print_gemini_site(
 
 
 static void print_bookmark_line(WINDOW *win, struct screen_line *line, int x, int y) {
-  scrollok(dialog_subwin, false);
-  wattron(dialog_subwin, line->attr);
+  scrollok(win, false);
+  wattron(win, line->attr);
 
   char *domain = NULL;
   char deleted_char = '\0';
@@ -686,18 +691,18 @@ static void print_bookmark_line(WINDOW *win, struct screen_line *line, int x, in
   }
  
   if(line->text != NULL) {
-    wattron(dialog_subwin, line->attr);
-    mvwprintw(dialog_subwin, y, offset_x, "%s", line->text);
-    wattroff(dialog_subwin, line->attr);
+    wattron(win, line->attr);
+    mvwprintw(win, y, x, "%s", line->text);
+    wattroff(win, line->attr);
 
     if(domain) {
       *domain = deleted_char;
-      mvwprintw(dialog_subwin, y, offset_x + domain - line->text, "%s", domain);
+      mvwprintw(win, y, x + domain - line->text, "%s", domain);
     }
   }
 
-  wattroff(dialog_subwin, line->attr);
-  scrollok(dialog_subwin, true); 
+  wattroff(win, line->attr);
+  scrollok(win, true); 
 }
 
 static void scrolldown(
@@ -824,16 +829,18 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
   wclear(dialog_subwin);
   refresh_windows();
   
-  int d_win_lines = max_y * (6.0 / 8.0);
-  int d_win_cols  = max_x * (6.0 / 8.0);
   int d_win_pos_y = max_y / 8.0;
   int d_win_pos_x = max_x / 8.0;
-  dialog_subwin_x = d_win_cols - 2;
-  dialog_subwin_y = d_win_lines - 2 - 2;
- 
-  wresize(dialog_win, d_win_lines, d_win_cols);
-  wresize(dialog_subwin, dialog_subwin_y, dialog_subwin_x);
-  wresize(dialog_title_win, 2, dialog_subwin_x);
+  
+  dialog_win_x = max_x * (6.0 / 8.0);
+  dialog_win_y = max_y * (6.0 / 8.0);
+  
+  dialog_subwin_x = dialog_win_x - 2 - 1;
+  dialog_subwin_y = dialog_win_y - 2 - 2;
+
+  wresize(dialog_win, dialog_win_y, dialog_win_x);
+  wresize(dialog_subwin, dialog_subwin_y, dialog_win_x - 2);
+  wresize(dialog_title_win, 2, dialog_win_x - 2);
 
   mvwin(dialog_win, d_win_pos_y, d_win_pos_x);
   mvwin(dialog_subwin, d_win_pos_y + 3, d_win_pos_x + 1);
@@ -868,7 +875,8 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
         wprintw(dialog_subwin, "%s", dialog_message);
       break;
   }
-
+  
+  draw_scrollbar(dialog_subwin, &bookmarks, dialog_subwin_y, dialog_win_x - 2 - offset_x);
   update_panels();
   doupdate();
 }
@@ -1031,7 +1039,8 @@ start:
 
 // ########## DIALOG ##########
 
-static void show_dialog() {
+static void show_dialog(enum dialog_types dialog_type) {
+  current_dialog_type = dialog_type;
   wclear(dialog_win);
   wclear(dialog_subwin);
   wclear(dialog_title_win);
@@ -1040,7 +1049,7 @@ static void show_dialog() {
   wattron(dialog_title_win, COLOR_PAIR(H3_COLOR));
   
   box(dialog_win, 0, 0);
-  mvwhline(dialog_title_win, 1, 0, 0, dialog_subwin_x + 2);
+  mvwhline(dialog_title_win, 1, 0, 0, dialog_win_x - 1);
 
   switch(current_dialog_type){
     case BOOKMARKS:
@@ -1122,8 +1131,7 @@ static char* handle_link_click(char *base_url, char *link, struct gemini_site *g
     case MAIL:
     case HTTP:
     case HTTPS:
-      current_dialog_type = INFO;
-      show_dialog();
+      show_dialog(INFO);
       print_to_dialog("Open %s? [y/n]", link);
         
       char selected_opt = dialog_ask(gem_site, resp, yes_no_options);
@@ -1131,8 +1139,6 @@ static char* handle_link_click(char *base_url, char *link, struct gemini_site *g
        open_link(link); 
 
       hide_dialog();
-      // wclear(info_bar_win);
-      // wprintw(info_bar_win, "%s", link);
       goto nullret;
     
     default: {
@@ -1171,19 +1177,23 @@ static char* handle_link_click(char *base_url, char *link, struct gemini_site *g
             link += 2;
           else
             link += 1;
+          
           if((chr = strrchr(p, '/')) != NULL)
             *chr = '\0';
         }
 
+        // at first, clear the current directory
+        if(m_strncmp(link, "..") == 0) {
+          if((chr = strrchr(p, '/')) != NULL)
+            *(chr) = '\0';
+        }
+        // then go back one directory up, as long as there'is ".."
         while(m_strncmp(link, "..") == 0) {
-          for(int i = 0; i < 2; i++) {
-            if((chr = strrchr(p, '/')) != NULL)
-              *(chr) = '\0';
-          }
+          if((chr = strrchr(p, '/')) != NULL)
+            *(chr) = '\0';
           link += 2;
-          if(m_strncmp(link, "/") == 0) {
+          if(m_strncmp(link, "/") == 0) 
             link++;
-          }
         }
         // we need to concentate '/' to the path, so check if we
         // didnt go too far, and adjust
@@ -1249,9 +1259,9 @@ func_start:
   switch(new_resp->status_code) {
     case CODE_SENSITIVE_INPUT:
       field_opts_off(search_field[1], O_PUBLIC);
+      // fall through
     case CODE_INPUT: 
-      current_dialog_type = INFO;
-      show_dialog();
+      show_dialog(INFO);
       
       new_resp->body[strlen(new_resp->body) - 2] = '\0';
       char *b_p = new_resp->body;
@@ -1355,16 +1365,13 @@ input_loop:
       }
       
       int header_offset = 0;
-      while(new_resp->body[header_offset] != '\n') 
-        header_offset++;
-      // one more to omit '\n'
-      header_offset++;
+      // skip the header
+      while(new_resp->body[header_offset++] != '\n'); 
 
       char default_app[NAME_MAX + 1];
       char selected_opt;
 
-      current_dialog_type = INFO;
-      show_dialog();
+      show_dialog(INFO);
       if(get_default_app(mime_type, default_app)) {
         print_to_dialog("If you want to open %s [o], if save [s], if nothing [n]", filename);
         const char options[] = {'o', 's', 'n'};
@@ -1441,8 +1448,7 @@ input_loop:
       if(was_redirected)
         free(gemini_url);
       
-      current_dialog_type = INFO;
-      show_dialog();
+      show_dialog(INFO);
       if(new_link) { 
         print_to_dialog("Do you want to redirect to: \n%s? [y/n]", new_link);
       }
@@ -1718,8 +1724,7 @@ int main() {
         // preview the link
         case 'C':;
           if(gem_site->lines && gem_site->selected_link_index != -1) {
-            current_dialog_type = INFO;
-            show_dialog();
+            show_dialog(INFO);
             print_to_dialog("%s", gem_site->lines[gem_site->selected_link_index]->link);
             dialog_ask(gem_site, resp, "");
             hide_dialog();
@@ -1743,13 +1748,10 @@ int main() {
              );
           }
           
-          current_dialog_type = BOOKMARKS;
-          show_dialog();
+          show_dialog(BOOKMARKS);
           print_gemini_site(&bookmarks, dialog_subwin, bookmarks.first_line_index, dialog_subwin_y, &print_bookmark_line);
-
-          update_panels();
-          doupdate();
           current_focus = BOOKMARKS_DIALOG;
+          goto refresh_bookmarks;
           break;        
         
         case 'A':;
@@ -1888,13 +1890,11 @@ int main() {
         case 'S':
         case 's':
           if(!gem_site->url || resp == NULL) break;
-          current_dialog_type = INFO;
-          show_dialog();
+          show_dialog(INFO);
           print_to_dialog("%s", "Do you want to save the gemsite? [y/n]");
           char selected_opt = dialog_ask(gem_site, resp, yes_no_options);
-          if(selected_opt == 'y') {
+          if(selected_opt == 'y') 
             save_gemsite(gem_site->url, resp);
-          }
           break;
 
         // enter
@@ -2084,6 +2084,8 @@ int main() {
 
           break;
       }
+refresh_bookmarks:    
+      draw_scrollbar(dialog_subwin, &bookmarks, dialog_subwin_y, dialog_win_x - 2 - 1);
       update_panels();
       wrefresh(dialog_subwin);
     }
