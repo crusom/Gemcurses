@@ -1,4 +1,5 @@
 #include "util.h"
+#include <time.h>
 
 char percentage_encode_chars[][4] = {
   ":", "%3A",
@@ -264,7 +265,7 @@ err:
 void write_file(char *buf, char *save_path, int size, int offset) {
   FILE *f = fopen(save_path, "wb");
   if(f == NULL) {
-    fprintf(stderr, "ERROR: cant allocate memory\n");
+    fprintf(stderr, "ERROR: cant open save_path\n");
     exit(EXIT_FAILURE);
   }
   
@@ -283,8 +284,12 @@ void exec_app(char *app, char *path) {
 }
 
 int save_file(char save_path[PATH_MAX + 1], char *buf, char *filename, int size, int offset) {
+  char *env = getenv("GEMCURSES_SAVE_PATH");  
+  if(env == NULL)
+    get_downloads_path(save_path);
+  else
+    strcpy(save_path, env);
 
-  get_downloads_path(save_path);
   strcat(save_path, filename);  
   write_file(buf, save_path, size, offset);
 
@@ -308,5 +313,71 @@ inline void free_char_pp(char **p, int n) {
     free(p[i]);
 }
 
-// TODO
-void save_gemsite(char *url, struct response *resp) {}
+int save_gemsite(char save_path[PATH_MAX + 1], char *url, struct response *resp) {
+  if(resp->status_code != CODE_SUCCESS || resp->body == NULL) return 0;
+  // get the pwd, and iterate over the url, to copy the gemsite into the right directory
+  // eg. gem.saayaa.space/gemlog/2022-09-12-like-a-bike.gmi to:
+  // ./saved/gem_saayaa_space/gemlog/2022-09-12-like-a-bike.gmi
+  char *pwd = getenv("PWD");   
+  
+  if(strncmp(url, "gemini://", 9) == 0) url += 9;
+
+  struct stat st;
+  strcpy(save_path, pwd);
+  strcat(save_path, "/saved/");
+  if(stat(save_path, &st) == -1)
+    mkdir(save_path, 0700);
+
+  char *dir = strchr(url, '/');
+  if(!dir) return 0;
+
+  int count_dots = 0;
+  for(int i = 0; i < dir - url; i++) {
+    if(url[i] == '.') count_dots++;
+  } 
+  // if we have 2 dots in domainname then there's a subdomain
+  // so create a directory of domainname and a subdomain in it
+  if(count_dots == 2) {
+    char *dot = strchr(url, '.');
+    dot++;
+    strncat(save_path, dot, dir - dot);
+  }
+  else {
+    strncat(save_path, url, dir - url); 
+  }
+  if(stat(save_path, &st) == -1)
+    mkdir(save_path, 0700);
+
+  char *dir_end;
+  while((dir_end = strchr(dir, '/'))) {
+    strncat(save_path, dir, dir_end - dir + 1);
+    if(stat(save_path, &st) == -1)
+      mkdir(save_path, 0700);
+    
+    dir = dir_end;
+    dir++;
+  }
+  if(*dir == 0) 
+    strcat(save_path, "MAIN.gmi"); 
+  else
+    strcat(save_path, dir);
+  
+  // add timestamp at the end, to allow to save same page multiple times, and know when each shoot was done
+  time_t my_time;
+  struct tm *timeinfo; 
+  time (&my_time);
+  timeinfo = localtime (&my_time);
+ 
+  char timestamp[200];
+  // i want this format, because i dont like escape characters
+  snprintf (timestamp, 100, "-%d-%d-%d--%d-%d", 
+    timeinfo->tm_mday, timeinfo->tm_mon+1, timeinfo->tm_year+1900,
+    timeinfo->tm_hour, timeinfo->tm_min
+  );
+  
+  strcat(save_path, timestamp);
+
+//  printf("%s", save_path);
+  write_file(resp->body, save_path, resp->body_size, 0);
+  return 1;
+}

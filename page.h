@@ -1,6 +1,7 @@
-#ifndef GEMINI_STRUCTS_H
-#define GEMINI_STRUCTS_H
+#ifndef PAGE_H
+#define PAGE_H
 #include <stdbool.h>
+#include <stddef.h>
 
 struct screen_line {
   char *text;
@@ -8,7 +9,7 @@ struct screen_line {
   unsigned int attr;
 };
 
-struct gemini_site {
+struct page_t {
   char *url;
   struct screen_line **lines;
   int lines_num;

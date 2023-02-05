@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 #include "bookmarks.h"
-#include "gemini_structs.h"
+#include "page.h"
 
 static const char bookmarks_filename[] = "bookmarks";
 
@@ -83,5 +83,4 @@ int delete_bookmark(char *str) {
     rename(tmp_bookmarks_filename, bookmarks_filename);
   return 1;
 }
-
 

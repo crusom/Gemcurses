@@ -3,12 +3,17 @@
 #include <panel.h>
 #include <string.h>
 #include <locale.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <wctype.h>
 
 #include "tls.h"
-#include "gemini_structs.h"
+#include "page.h"
 #include "bookmarks.h"
 #include "util.h"
+#include "utf8.h"
 
+#define SAVED_DIR "saved/"
 #define MAIN_GEM_SITE "warmedal.se/~antenna/"
 #define set_main_win_x(max_x) main_win_x = max_x - offset_x - 1
 #define set_main_win_y(max_y) main_win_y = max_y - search_bar_height - info_bar_height - 1 - 1
@@ -42,11 +47,12 @@ enum element current_focus = MAIN_WINDOW;
 
 enum mode {SCROLL_MODE, LINKS_MODE};
 enum mode current_mode = SCROLL_MODE;
+bool is_offline = false;
 
 enum color {LINK_COLOR = 1, H1_COLOR = 2, H2_COLOR = 3, H3_COLOR = 4, QUOTE_COLOR = 5, DIALOG_COLOR = 6};
 
 enum protocols {HTTPS, HTTP, GOPHER, MAIL, FINGER, SPARTAN, GEMINI, null};
-enum dialog_types {BOOKMARKS, INFO} current_dialog_type;
+enum dialog_types {BOOKMARKS, INFO, OFFLINE} current_dialog_type;
 
 const char *protocols_strings[] = {
   [HTTPS] = " [https]",
@@ -59,12 +65,17 @@ const char *protocols_strings[] = {
 
 const char yes_no_options[] = {'y', 'n'};
 bool is_dialog_hidden = true;
-struct gemini_site bookmarks;
+
+struct page_t bookmarks;
+struct page_t offline;
+struct page_t offline_dirs;
+
+char offline_path[PATH_MAX + 1] = {0};
 
 // TODO ?
 //struct gemini_history {
 //  struct {
-//    struct gemini_site **gem_sites;
+//    struct page_t **gem_sites;
 //    int index;
 //    int size;
 //  } content_cache;
@@ -148,8 +159,8 @@ static void init_windows() {
   keypad(search_bar_win, true);
   isbookmarked_win = newwin(1, 1, 0, max_x - 1);
   
-  info_bar_win = newwin(info_bar_height, max_x - 2, max_y - 1, 0);  
-  mode_win = newwin(1, 1, max_y - 1, max_x - 1);
+  info_bar_win = newwin(info_bar_height, max_x - 6, max_y - 1, 0);  
+  mode_win = newwin(1, 5, max_y - 1, max_x - 5);
 
   init_colors();
   refresh();  
@@ -196,21 +207,21 @@ void free_windows() {
   endwin();
 }
 
-static void free_lines(struct gemini_site *gem_site) {
+static void free_lines(struct page_t *page) {
   
-  for(int i = 0; i < gem_site->lines_num; i++) {
-    if(gem_site->lines[i]) {
-      free(gem_site->lines[i]->text);
+  for(int i = 0; i < page->lines_num; i++) {
+    if(page->lines[i]) {
+      free(page->lines[i]->text);
       
-      if(gem_site->lines[i]->link != NULL) {
-        char *p = gem_site->lines[i]->link;
+      if(page->lines[i]->link != NULL) {
+        char *p = page->lines[i]->link;
         int j = 0;
         free(p);
 
         // the  next line may have the same link pointer so take care of it
-        while(i + j < gem_site->lines_num) {
-          if(gem_site->lines[i + j]->link == p) {
-            gem_site->lines[i + j]->link = NULL;
+        while(i + j < page->lines_num) {
+          if(page->lines[i + j]->link == p) {
+            page->lines[i + j]->link = NULL;
             j++;
           }
           else {
@@ -219,11 +230,11 @@ static void free_lines(struct gemini_site *gem_site) {
         }
       }
 
-      free(gem_site->lines[i]);
+      free(page->lines[i]);
      }
   }
-  free(gem_site->lines);
-  gem_site->lines = NULL;
+  free(page->lines);
+  page->lines = NULL;
 }
 
 static void free_paragraphs(char **paragraphs, int paragraphs_num) {
@@ -248,26 +259,26 @@ static void free_resp(struct response *resp) {
 static void draw_borders() {
   mvhline(search_bar_height, 0, 0, max_x);
   mvhline(max_y - 2, 0, 0, max_x);
-  mvvline(max_y - 1, max_x - 2, 0, 1);
+  mvvline(max_y - 1, max_x - 6, 0, 1);
   mvvline(0, max_x - 2, 0, 1);
 }
 
-static void draw_scrollbar(WINDOW *win, struct gemini_site *gem_site, int page_y, int page_x) {
-  if(gem_site->lines_num <= 0) return;
+static void draw_scrollbar(WINDOW *win, struct page_t *page, int page_y, int page_x) {
+  if(page->lines_num <= 0) return;
 
   float y;
-  float scrollbar_height = (float)((page_y) * (page_y)) / (float)gem_site->lines_num;
+  float scrollbar_height = (float)((page_y) * (page_y)) / (float)page->lines_num;
   if(scrollbar_height < 1.0)
     scrollbar_height = 1.0;
 
-  if(gem_site->first_line_index == 0) {
+  if(page->first_line_index == 0) {
     y = 0;
   } 
-  else if(gem_site->last_line_index == gem_site->lines_num) {
+  else if(page->last_line_index == page->lines_num) {
     y = (float)(page_y + 1 - scrollbar_height);
   }
   else {
-    y = (float)(gem_site->first_line_index + 1) / (float)gem_site->lines_num;
+    y = (float)(page->first_line_index + 1) / (float)page->lines_num;
     y = page_y * y;
     y = (int)(y + 0.5);
   }
@@ -278,12 +289,17 @@ static void draw_scrollbar(WINDOW *win, struct gemini_site *gem_site, int page_y
 
 // ########## STRINGS ##########
 
+static char *skip_whitespaces(char *str) {
+  while(isspace(*str))
+    str++;
+  return str;
+}
+
 static char *trim_whitespaces(char *str) {
   char *end;
 
-  while(isspace(*str))
-    str++;
-
+  skip_whitespaces(str);
+  
   if(*str == 0)
     return str;
 
@@ -300,6 +316,8 @@ static inline int m_strncmp(char *a, const char *b) {
   return strncmp(a, b, strlen(b));
 }
 
+// we get a string and we cut it to equal parts, which are terminal width
+// so every line is indepenent 
 static char **string_to_paragraphs(char *str, int *paragraphs_num) {
   int i = 0, num_newlines = 0;
   // count new paragraphs to know how many gemini_paragraph to allocate
@@ -336,70 +354,26 @@ static char **string_to_paragraphs(char *str, int *paragraphs_num) {
   return paragraphs;
 }
 
-
-static int strlen_utf8(char *s) {
-  int len = 0, i = 0;
-  char *p = s;
-  while(*p != '\0') {
-    int j = 1;
-    if(p[i] & 0x80) {
-      while((p[i] << j) & 0x80) j++;
-    }
-    p += j;
-    len++;
-  }
-  return len;
-}
-
-static int utf8_to_bytes(char *s, int n) {
-  int len = 0, i = 0, all_bytes = 0;
-  char *p = s;
-  while(*p && len != n) {
-    int j = 1;
-    if(p[i] & 0x80) {
-      while((p[i] << j) & 0x80) j++;
-    }
-    p += j;
-    all_bytes += j;
-    len++;
-  }
-  return all_bytes;
-}
-
-static int bytes_to_utf8(char *s, int n) {
-  int len = 0, i = 0;
-  char *p = s;
-  while(*p && len != n) {
-    int j = 1;
-    if(p[i] & 0x80) {
-      while((p[i] << j) & 0x80) j++;
-    }
-    p += j;
-    len++;
-  }
-  return len;
-}
-
 static enum protocols get_protocol(char *str) {
   
-  enum protocols tmp_protocol = null;
+  enum protocols protocol = null;
 
   if(m_strncmp(str, "gemini://") == 0 || m_strncmp(str, "//") == 0)
-    tmp_protocol = GEMINI;
+    protocol = GEMINI;
   else if(m_strncmp(str, "https://") == 0)
-    tmp_protocol = HTTPS;
+    protocol = HTTPS;
   else if(m_strncmp(str, "http://") == 0)
-    tmp_protocol = HTTP;
+    protocol = HTTP;
   else if(m_strncmp(str, "gopher://") == 0)
-    tmp_protocol = GOPHER;
+    protocol = GOPHER;
   else if(m_strncmp(str, "mailto:") == 0)
-    tmp_protocol = MAIL;
+    protocol = MAIL;
   else if(m_strncmp(str, "finger://") == 0)
-    tmp_protocol = FINGER;
+    protocol = FINGER;
   else if(m_strncmp(str, "spartan://") == 0)
-    tmp_protocol = SPARTAN;
+    protocol = SPARTAN;
 
-  return tmp_protocol;
+  return protocol;
 }
 
 static int get_paragraph_attr(char **paragraph, char **link, enum protocols *protocol, int *p_offset) {
@@ -435,39 +409,40 @@ static int get_paragraph_attr(char **paragraph, char **link, enum protocols *pro
       attr |= A_UNDERLINE;
       attr |= COLOR_PAIR(LINK_COLOR);
       offset = 2;
-      char *tmp_para = *paragraph + 2;
-      
+      char *paragraph_end = NULL;
+      char *link_start = *paragraph + 2;
+
       // skip the first whitespace
-      while(*tmp_para != '\0' && isspace(*tmp_para)) {
-        tmp_para++;
+      while(*link_start != '\0' && isspace(*link_start)) {
+        link_start++;
         offset++;
       }
 
-      *protocol = get_protocol(tmp_para);
+      *protocol = get_protocol(link_start);
 
       // go throught the URL
-      char *link_start = tmp_para;
-      while(*tmp_para != '\0' && !isspace(*tmp_para)) {
-        tmp_para++;
+      paragraph_end = link_start;
+      while(*paragraph_end != '\0' && !isspace(*paragraph_end)) {
+        paragraph_end++;
         offset++;
       }
       
       // copy the URL
-      if(link_start != tmp_para) {
-        char *link_p = (char*) calloc(tmp_para - link_start + 1, sizeof(char));
-        memcpy(link_p, link_start, tmp_para - link_start);
-        link_p[tmp_para - link_start] = '\0';
+      if(link_start != paragraph_end) {
+        char *link_p = (char*) calloc(paragraph_end - link_start + 1, sizeof(char));
+        memcpy(link_p, link_start, paragraph_end - link_start);
+        link_p[paragraph_end - link_start] = '\0';
         *link = link_p;
       }
       
-      // skip whitespace after url
-      while(*tmp_para != '\0' && isspace(*tmp_para)) {
-        tmp_para++;
+      // skip whitespace(s) after url
+      while(*paragraph_end != '\0' && isspace(*paragraph_end)) {
+        paragraph_end++;
         offset++;
       }
      
       // if there is no '<USER_FRIENDLY LINK NAME>' then show the plain URL
-      if(*tmp_para == '\0') {
+      if(*paragraph_end == '\0') {
         *protocol = null;
         offset = link_start - *paragraph;
       }
@@ -475,9 +450,10 @@ static int get_paragraph_attr(char **paragraph, char **link, enum protocols *pro
         // i found out that for some reasons, some links have
         // a '\r' symbol at the end?
         // so we need to check this
-        while(*tmp_para && *tmp_para != '\r')
-          tmp_para++;
-        *tmp_para = '\0';
+        // i suspect it's windows carriage return fault
+        while(*paragraph_end && *paragraph_end != '\r')
+          paragraph_end++;
+        *paragraph_end = '\0';
       }
     }
   }
@@ -489,48 +465,52 @@ static int get_paragraph_attr(char **paragraph, char **link, enum protocols *pro
 
 
 static struct screen_line** paragraphs_to_lines(
-    struct gemini_site *gem_site, 
+    struct page_t *page, 
     char **paragraphs, 
     int paragraphs_num, 
     int page_x, 
     // this flag is used in bookmarks
-    int *lines_num_arg,
     bool set_links_to_paragraphs
 ) {
+  
+  bool is_preformatted_mode = false;
  
   struct screen_line **lines = (struct screen_line**) calloc(1, 1 * sizeof(struct screen_line *));
   int num_lines = 0;
   
   for(int i = 0; i < paragraphs_num; i++) {
-  
-    enum protocols protocol = null; 
     char *line_str = paragraphs[i], *link = NULL;
-    bool is_last_line = false;
-    int offset = 0;
+    enum protocols protocol = null; 
+    int offset_begin = 0;
     int attr = A_NORMAL;
 
+    bool is_last_line = false;
     // this flag is used with set_links_to_paragraphs
     // if we're printing bookmarks, then we need to know which part (domain) should be bolded
     // so what we do, is we give attr A_BOLD to everything, that's before the slash mark '/' in a url
     bool make_domain_bold = false;
-    
-    if(!set_links_to_paragraphs) {
-      attr = get_paragraph_attr(&line_str, &link, &protocol, &offset);
+ 
+    if(strcmp(line_str, "```") == 0)
+      is_preformatted_mode = !is_preformatted_mode;
+   
+    if(set_links_to_paragraphs == false) {
+      attr = get_paragraph_attr(&line_str, &link, &protocol, &offset_begin);
     } 
     else {
       link = strdup(paragraphs[i]);
       make_domain_bold = true;
     }
     
-    line_str += offset;
+    line_str += offset_begin;
      
+    // it's a link to non gemini page
     if(protocol != null && protocol != GEMINI) {
       // if it's not a gemini protocol we need to append an information to the end of the link
       // so realloc, add to the end, and set line_str to our reallocated string + offset
       const char *protocol_str = protocols_strings[protocol];
       paragraphs[i] = realloc(paragraphs[i], strlen(paragraphs[i]) + strlen(protocol_str) + 1);
       strcat(paragraphs[i], protocol_str);
-      line_str = paragraphs[i] + offset;
+      line_str = paragraphs[i] + offset_begin;
     }
     
     // loop over all lines in a paragraph
@@ -538,38 +518,37 @@ static struct screen_line** paragraphs_to_lines(
       // if at the end of the line we have a splited word
       // then move the whole word to the next line 
       int word_offset = 0;
-
-      int utf8_len = strlen_utf8(line_str);
-      if(utf8_len <= page_x - offset_x)
+      //int line_len = utf8_to_bytes(line_str, page_x - offset_x);
+      int line_len = utf8_to_bytes(line_str, utf8_max_chars_in_width(line_str, page_x - offset_x));
+      
+      //if(utf8_max_chars_in_bytes(line_str, strlen(line_str)) <= page_x - offset_x)
+      if(utf8_strwidth(line_str) <= page_x - offset_x)
         is_last_line = true;
 
-      int line_len = utf8_to_bytes(line_str, page_x - offset_x);
-
       // check if word at the end of the line needs to be moved to the next line
-      char *tmp_line = line_str, *last_found_space = NULL;
-      if(*(line_str + line_len) != '\0') {  
-        while(tmp_line != line_str + line_len) {
-          tmp_line += utf8_to_bytes(tmp_line, 1);
-          if(isspace(*tmp_line)) 
-            last_found_space = tmp_line;
+      char *line_p = line_str, *last_found_space = NULL;
+      if(line_str[line_len] != '\0') {  
+        while(line_p != line_str + line_len) {
+          line_p += utf8_to_bytes(line_p, 1);
+          if(iswspace(get_wchar(line_p)))
+            last_found_space = line_p;
         }
+
         if(last_found_space != NULL) {
-          int tmp = bytes_to_utf8(last_found_space, (line_str + line_len) - last_found_space);
-          // word offset should be in raw, non-unicode bytes
+          // word offset in *raw bytes*
           word_offset = (line_str + line_len) - last_found_space;
-          // if we have one long line then let it be split
-          // otherwise move 
-          if(tmp > (page_x - offset_x) / 2) {
+          // if we have one long line then let it be split, otherwise move 
+          if(utf8_strnwidth(last_found_space, utf8_max_chars_in_bytes(last_found_space, word_offset)) > (page_x - offset_x) / 2) {
             word_offset = 0;
           }
         }
       }
      
-      line_len -= word_offset;
-
-      // TODO do this only if there is no ''' paragraph
-      if(*line_str != '\0' && isspace(*line_str)) {
+      line_len -= word_offset; 
+      
+      if(*line_str != '\0' && iswspace(get_wchar(line_str)) && is_preformatted_mode == false) {
         line_str++;
+        line_len--;
       }
     
       num_lines++;
@@ -587,9 +566,9 @@ static struct screen_line** paragraphs_to_lines(
         if(strchr(text, '/'))
           make_domain_bold = false;
       }
-      else
+      else {
         line->attr = attr;
-
+      }
       line->text = text;
       line->link = link;
       lines[num_lines - 1] = line;
@@ -598,8 +577,8 @@ static struct screen_line** paragraphs_to_lines(
     } while(!is_last_line);
   }
 
-  *lines_num_arg = num_lines;
-  gem_site->selected_link_index = -1;
+  page->lines_num = num_lines;
+  page->selected_link_index = -1;
 
   return lines;
 }
@@ -609,10 +588,11 @@ static struct screen_line** paragraphs_to_lines(
 
 static void print_current_mode() {
   werase(mode_win);
-  if(current_mode == LINKS_MODE)
-    wprintw(mode_win, "%c", 'L');
-  else
-    wprintw(mode_win, "%c", 'S');
+  wprintw(mode_win, "%s|%c", 
+    (is_offline) ? "off" : "on",
+    (current_mode == LINKS_MODE) ? 'L' : 'S'
+  );
+  wrefresh(mode_win);
 }
 
 static void print_is_bookmarked(bool is_bookmarked) {
@@ -645,8 +625,8 @@ static void printline(WINDOW *win, struct screen_line *line, int x, int y) {
   scrollok(win, true); 
 }
 
-static void print_gemini_site(
-    struct gemini_site *gem_site, 
+static void print_page(
+    struct page_t *page, 
     WINDOW *win, 
     int first_line_index, 
     int page_y,
@@ -661,15 +641,15 @@ static void print_gemini_site(
     print_func = &printline;
   // print all we can
   for(int i = 0; i < page_y; i++){
-    line = gem_site->lines[index];
+    line = page->lines[index];
     print_func(win, line, offset_x, i);
     index++;
-    if(index >= gem_site->lines_num)
+    if(index >= page->lines_num)
       break;
   }
 
-  gem_site->last_line_index = index;
-  gem_site->first_line_index = first_line_index;
+  page->last_line_index = index;
+  page->first_line_index = first_line_index;
   
   scrollok(win, true);
 }
@@ -680,12 +660,12 @@ static void print_bookmark_line(WINDOW *win, struct screen_line *line, int x, in
   wattron(win, line->attr);
 
   char *domain = NULL;
-  char deleted_char = '\0';
+  char deleted_delimiter = '\0';
 
   if(line->attr == A_BOLD) {
     domain = strchr(line->text, '/');
     if(domain) {
-      deleted_char = *domain;
+      deleted_delimiter = *domain;
       *domain = '\0';
     }
   }
@@ -696,7 +676,7 @@ static void print_bookmark_line(WINDOW *win, struct screen_line *line, int x, in
     wattroff(win, line->attr);
 
     if(domain) {
-      *domain = deleted_char;
+      *domain = deleted_delimiter;
       mvwprintw(win, y, x + domain - line->text, "%s", domain);
     }
   }
@@ -706,46 +686,50 @@ static void print_bookmark_line(WINDOW *win, struct screen_line *line, int x, in
 }
 
 static void scrolldown(
-    struct gemini_site *gem_site, 
+    struct page_t *page, 
     WINDOW *win,
     int page_y, 
     println_func_def print_func
   ) {
   
-  if(gem_site->last_line_index >= gem_site->lines_num || gem_site->lines == NULL)
+  if(page->last_line_index >= page->lines_num || page->lines == NULL)
     return;
   
   wscrl(win, 1);
 
-  struct screen_line *line = gem_site->lines[gem_site->last_line_index];
+  struct screen_line *line = page->lines[page->last_line_index];
   if(!print_func) print_func = &printline;  
   print_func(win, line, offset_x, page_y - 1);
 
-  gem_site->last_line_index++;
-  gem_site->first_line_index++;
+  page->last_line_index++;
+  page->first_line_index++;
 }
 
 
 static void scrollup(
-    struct gemini_site *gem_site, 
+    struct page_t *page, 
     WINDOW *win,
     println_func_def print_func
   ) {
   
-  if(gem_site->first_line_index == 0 || gem_site->lines == NULL)
+  if(page->first_line_index == 0 || page->lines == NULL)
     return;
 
   wscrl(win, -1);
   
-  gem_site->first_line_index--;
-  gem_site->last_line_index--;
+  page->first_line_index--;
+  page->last_line_index--;
 
-  struct screen_line *line = gem_site->lines[gem_site->first_line_index];
+  struct screen_line *line = page->lines[page->first_line_index];
   if(!print_func) print_func = &printline;  
   print_func(win, line, offset_x, 0);
 }
 
-static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
+
+// this function is bulk, i know, but just freeing and initializing everythink again
+// has a huge memory and performance impact.
+// we need to resize and move windows manually i guess, or make some sort of functions to do what
+static void resize_screen(struct page_t *page, struct response *resp) {
 
   endwin();
   refresh();
@@ -760,14 +744,14 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
   set_main_win_y(max_y);
   
   // info_bar win
-  wresize(info_bar_win, 1, max_x - 2);
+  wresize(info_bar_win, 1, max_x - 6);
   mvwin(info_bar_win, max_y - 1, 0);
   wclear(info_bar_win);
   if(info_message)
     wprintw(info_bar_win, "%s", info_message);
 
   // mode win
-  mvwin(mode_win, max_y - 1, max_x - 1);
+  mvwin(mode_win, max_y - 1, max_x - 5);
   print_current_mode();
 
   // search_bar win
@@ -775,7 +759,7 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
   
   // bookmarked win
   mvwin(isbookmarked_win, 0, max_x - 1);
-  print_is_bookmarked(gem_site->is_bookmarked);
+  print_is_bookmarked(page->is_bookmarked);
   
   // main win
   wresize(main_win, main_win_y, max_x);
@@ -803,26 +787,28 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
 
   // main win
   // set selected link to index -1, to start from the beginning of the page 
-  gem_site->selected_link_index = -1;
+  page->selected_link_index = -1;
   // if there was a response, then print it
-  if(gem_site->lines != NULL)
-    free_lines(gem_site);
-  
-  if(resp && resp->body) {
-    int paragraphs_num = 0;
-    char **paragraphs = string_to_paragraphs(resp->body, &paragraphs_num);
-    gem_site->lines = paragraphs_to_lines(
-        gem_site, 
-        paragraphs, 
-        paragraphs_num, 
-        main_win_x, 
-        &gem_site->lines_num, 
-        false
-    );
-    
-    free_paragraphs(paragraphs, paragraphs_num);
-    print_gemini_site(gem_site, main_win, 0, main_win_y, NULL);
+  if(page->lines != NULL)
+    free_lines(page);
+  if(!is_offline) { 
+    if(resp && resp->body) {
+      int paragraphs_num = 0;
+      char **paragraphs = string_to_paragraphs(resp->body, &paragraphs_num);
+      page->lines = paragraphs_to_lines(
+          page, 
+          paragraphs, 
+          paragraphs_num, 
+          main_win_x, 
+          false
+      );
+      
+      free_paragraphs(paragraphs, paragraphs_num);
+      print_page(page, main_win, 0, main_win_y, NULL);
+    }
   }
+  // TODO
+  else {}
 
   // dialog panel
   wclear(dialog_win);
@@ -858,7 +844,6 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
       bookmarks_links, 
       num_bookmarks_links, 
       dialog_subwin_x, 
-      &bookmarks.lines_num,
       true
     );
   }
@@ -867,12 +852,17 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
     case BOOKMARKS:
       mvwprintw(dialog_title_win, 0, dialog_subwin_x / 2 - 4, "%s", "Bookmarks");
       if(bookmarks.lines)
-        print_gemini_site(&bookmarks, dialog_subwin, 0, dialog_subwin_y, &print_bookmark_line);
+        print_page(&bookmarks, dialog_subwin, 0, dialog_subwin_y, &print_bookmark_line);
       break;
     case INFO:
       mvwprintw(dialog_title_win, 0, dialog_subwin_x / 2 - 2, "%s", "Info");
       if(dialog_message)
         wprintw(dialog_subwin, "%s", dialog_message);
+      break;
+    case OFFLINE: 
+      mvwprintw(dialog_title_win, 0, dialog_subwin_x / 2 - 3, "%s", "Offline");
+      if(offline.lines)
+        print_page(&offline, dialog_subwin, 0, dialog_subwin_y, NULL);
       break;
   }
   
@@ -882,7 +872,7 @@ static void resize_screen(struct gemini_site *gem_site, struct response *resp) {
 }
 
 static void reprint_line(
-    struct gemini_site *gem_site, 
+    struct page_t *page, 
     WINDOW *win, 
     int index, 
     int offset,
@@ -892,85 +882,85 @@ static void reprint_line(
   wmove(win, offset, 0);
   wclrtoeol(win);
   if(!print_func) print_func = &printline;
-  print_func(win, gem_site->lines[index], offset_x, offset);
+  print_func(win, page->lines[index], offset_x, offset);
 }
 
 
 static void pagedown(
-    struct gemini_site *gem_site, 
+    struct page_t *page, 
     WINDOW *win, 
     int page_y,
     println_func_def print_func
     ) {
-  if(gem_site->lines_num > page_y) {
+  if(page->lines_num > page_y) {
     int start_line = 0;
-    if(gem_site->last_line_index + page_y > gem_site->lines_num)
-      start_line = gem_site->lines_num - page_y;
+    if(page->last_line_index + page_y > page->lines_num)
+      start_line = page->lines_num - page_y;
     else
-      start_line = gem_site->last_line_index;
+      start_line = page->last_line_index;
   
     werase(win);
-    print_gemini_site(gem_site, win, start_line, page_y, print_func);
+    print_page(page, win, start_line, page_y, print_func);
   }
 }
 
 
 static void pageup(
-    struct gemini_site *gem_site, 
+    struct page_t *page, 
     WINDOW *win, 
     int page_y,
     println_func_def print_func
     ) {
-  if(gem_site->lines_num > page_y) {
+  if(page->lines_num > page_y) {
     int start_line_index = 0;
-    if(gem_site->first_line_index - page_y < 0)
+    if(page->first_line_index - page_y < 0)
       start_line_index = 0;
     else
-      start_line_index = gem_site->first_line_index - page_y;
+      start_line_index = page->first_line_index - page_y;
 
     werase(win);
-    print_gemini_site(gem_site, win, start_line_index, page_y, print_func);
+    print_page(page, win, start_line_index, page_y, print_func);
   }
 }
 
 
 static void nextlink(
-    struct gemini_site *gem_site, 
+    struct page_t *page, 
     WINDOW *win, 
     int page_y,
     println_func_def print_func
     ) {
   bool is_pagedown = false;
 start:
-  if(gem_site->last_line_index > gem_site->lines_num)
+  if(page->last_line_index > page->lines_num)
     return;
-  if(gem_site->lines == NULL)
+  if(page->lines == NULL)
     return;
 
-  int link_index = gem_site->selected_link_index;
+  int link_index = page->selected_link_index;
   if(link_index == -1) { 
-    link_index = gem_site->first_line_index - 1;
+    link_index = page->first_line_index - 1;
   }
-  else if(link_index < gem_site->first_line_index || link_index >= gem_site->last_line_index){
-    gem_site->lines[link_index]->attr ^= A_STANDOUT; 
-    link_index = gem_site->first_line_index - 1;
-    gem_site->selected_link_index = -1;
+  else if(link_index < page->first_line_index || link_index >= page->last_line_index){
+    page->lines[link_index]->attr ^= A_STANDOUT; 
+    link_index = page->first_line_index - 1;
+    page->selected_link_index = -1;
   }
 
-  int offset = link_index - gem_site->first_line_index;
+  int offset = link_index - page->first_line_index;
     
   // if the next link is on the current page, then just highlight it 
-  for(int i = 1; i < gem_site->last_line_index - link_index; i++) {
-    if(gem_site->lines[link_index + i]->link != NULL) {
+  for(int i = 1; i < page->last_line_index - link_index; i++) {
+    if(page->lines[link_index + i]->link != NULL) {
       // unhighlight the old selected link
-      if(gem_site->selected_link_index != -1) {
-        gem_site->lines[link_index]->attr ^= A_STANDOUT;
-        reprint_line(gem_site, win, link_index, offset, print_func);
+      if(page->selected_link_index != -1) {
+        page->lines[link_index]->attr ^= A_STANDOUT;
+        reprint_line(page, win, link_index, offset, print_func);
       }
       // highlight the selected link
-      gem_site->lines[link_index + i]->attr ^= A_STANDOUT;
-      gem_site->selected_link_index = link_index + i;
-      reprint_line(gem_site, win, link_index + i, offset + i, print_func);
+      page->lines[link_index + i]->attr ^= A_STANDOUT;
+      page->selected_link_index = link_index + i;
+      reprint_line(page, win, link_index + i, offset + i, print_func);
       return;
     }
   }
@@ -978,13 +968,13 @@ start:
   // if there's no link on the page, then go page down and find a link in a new page
   if(is_pagedown) return;
   is_pagedown = true;
-  pagedown(gem_site, win, page_y, print_func);
+  pagedown(page, win, page_y, print_func);
   goto start;
 }
 
 
 static void prevlink(
-    struct gemini_site *gem_site, 
+    struct page_t *page, 
     WINDOW *win, 
     int page_y,
     println_func_def print_func
@@ -992,37 +982,37 @@ static void prevlink(
   bool is_pageup = false;
 
 start:
-  if(gem_site->lines == NULL)
+  if(page->lines == NULL)
     return;
-  if(gem_site->first_line_index < 0)
+  if(page->first_line_index < 0)
     return;
 
-  int link_index = gem_site->selected_link_index;
+  int link_index = page->selected_link_index;
   if(link_index == -1) {
-    link_index = gem_site->last_line_index;
+    link_index = page->last_line_index;
   }
-  else if(link_index < gem_site->first_line_index || link_index >= gem_site->last_line_index){
-    gem_site->lines[link_index]->attr ^= A_STANDOUT;
-    link_index = gem_site->last_line_index;
-    gem_site->selected_link_index = -1;
+  else if(link_index < page->first_line_index || link_index >= page->last_line_index){
+    page->lines[link_index]->attr ^= A_STANDOUT;
+    link_index = page->last_line_index;
+    page->selected_link_index = -1;
   }
 
-  int offset = link_index - gem_site->first_line_index;
+  int offset = link_index - page->first_line_index;
   // if the next link is on the current page, then just highlight it 
-  for(int i = 1; i <= link_index - gem_site->first_line_index; i++) {
+  for(int i = 1; i <= link_index - page->first_line_index; i++) {
     if(link_index - i < 0)
       return;
     
-    if(gem_site->lines[link_index - i]->link != NULL) {      
+    if(page->lines[link_index - i]->link != NULL) {      
       // unhighlight the old selected link
-      if(gem_site->selected_link_index != -1) {
-        gem_site->lines[link_index]->attr ^= A_STANDOUT;
-        reprint_line(gem_site, win, link_index, offset, print_func);
+      if(page->selected_link_index != -1) {
+        page->lines[link_index]->attr ^= A_STANDOUT;
+        reprint_line(page, win, link_index, offset, print_func);
       }
       // highlight the selected link
-      gem_site->lines[link_index - i]->attr ^= A_STANDOUT;
-      gem_site->selected_link_index = link_index - i;
-      reprint_line(gem_site, win, link_index - i, offset - i, print_func);
+      page->lines[link_index - i]->attr ^= A_STANDOUT;
+      page->selected_link_index = link_index - i;
+      reprint_line(page, win, link_index - i, offset - i, print_func);
       return;
     }
   }
@@ -1030,7 +1020,7 @@ start:
   // if there's no link on the page, then go page up and find a link in a new page
   if(is_pageup) return;
   is_pageup = true;
-  pageup(gem_site, win, page_y, print_func);
+  pageup(page, win, page_y, print_func);
   goto start;
 }
 
@@ -1057,6 +1047,9 @@ static void show_dialog(enum dialog_types dialog_type) {
       break;
     case INFO:
       mvwprintw(dialog_title_win, 0, dialog_subwin_x / 2 - 2, "%s", "Info");
+      break;
+    case OFFLINE:
+      mvwprintw(dialog_title_win, 0, dialog_subwin_x / 2 - 3, "%s", "Offline");
       break;
   }
   
@@ -1094,12 +1087,12 @@ static void print_to_dialog(const char *format, ...) {
   doupdate();
 }
 
-static char dialog_ask(struct gemini_site *gem_site, struct response *resp, const char *options) {
+static char dialog_ask(struct page_t *page, struct response *resp, const char *options) {
   int c;
 loop:
   c = getch();
   if(c == KEY_RESIZE) {
-    resize_screen(gem_site, resp); 
+    resize_screen(page, resp); 
     goto loop;
   }
   
@@ -1113,7 +1106,7 @@ loop:
 }
 
 // ########## LINK HANDLE ##########
-static char* handle_link_click(char *base_url, char *link, struct gemini_site *gem_site, struct response *resp) {
+static char* handle_link_click(char *base_url, char *link, struct page_t *page, struct response *resp) {
   char *new_url = strdup(base_url);
 
   if(!link)
@@ -1134,7 +1127,7 @@ static char* handle_link_click(char *base_url, char *link, struct gemini_site *g
       show_dialog(INFO);
       print_to_dialog("Open %s? [y/n]", link);
         
-      char selected_opt = dialog_ask(gem_site, resp, yes_no_options);
+      char selected_opt = dialog_ask(page, resp, yes_no_options);
       if(selected_opt == 'y')
        open_link(link); 
 
@@ -1231,8 +1224,57 @@ nullret:
 }
 
 
+// ########## OFFLINE ##########
+static char** load_dirs(char *relative_path, int *n_dirs_arg) {  
+  DIR *dp;
+  struct dirent *ep;
+  
+  char path[PATH_MAX + 1];
+  char *pwd = getenv("PWD");
+  strcpy(path, pwd);
+  strcat(path, "/");
+  strcat(path, SAVED_DIR);
+  strcat(path, relative_path);
+//  fprintf(stderr, "%s", path);
+  struct stat st;
+  if(stat(path, &st) == -1)
+    mkdir(path, 0700);
+
+  dp = opendir(path);
+  char **dirs = NULL;
+  int n_dirs = 0;
+  if(dp != NULL) {
+//    fprintf(stderr,"%s", offline_path);
+    while((ep = readdir(dp)) != NULL) {
+//      if(relative_path[0] != 0);
+//      else if(strcmp(ep->d_name, ".") == 0) continue
+      // TODO
+      if(strcmp(ep->d_name, ".") == 0)
+        continue;
+      n_dirs++;
+      dirs = realloc(dirs, n_dirs * sizeof(char*));
+      if(ep->d_type == DT_DIR) {
+        dirs[n_dirs - 1] = malloc(strlen(ep->d_name) + 2);
+        strcpy(dirs[n_dirs - 1], ep->d_name); 
+        strcat(dirs[n_dirs - 1], "/");
+      } else {
+        dirs[n_dirs - 1] = strdup(ep->d_name);
+      }
+    
+    }
+
+    (void) closedir(dp);
+  }
+  else {
+    perror("Couldn't open the directory");
+    return NULL;
+  }
+  *n_dirs_arg = n_dirs;
+  return dirs;
+}
+
 // ########## REQUEST ##########
-static int request_gem_site(char *gemini_url, struct gemini_tls *gem_tls, struct gemini_site *gem_site, struct response **resp) {
+static int request_gem_page(char *gemini_url, struct gemini_tls *gem_tls, struct page_t *page, struct response **resp) {
   
   bool was_redirected = false;
 func_start:
@@ -1284,7 +1326,7 @@ input_loop:
           hide_dialog();
           curs_set(0);
           set_field_buffer(search_field[0], 0, "url:");
-          set_field_buffer(search_field[1], 0, gem_site->url);
+          set_field_buffer(search_field[1], 0, page->url);
           goto err;
 
         case KEY_LEFT:
@@ -1330,7 +1372,7 @@ input_loop:
           goto func_start;
 
         case KEY_RESIZE:
-          resize_screen(gem_site, *resp);
+          resize_screen(page, *resp);
           goto input_loop;
 
         default:
@@ -1376,7 +1418,7 @@ input_loop:
         print_to_dialog("If you want to open %s [o], if save [s], if nothing [n]", filename);
         const char options[] = {'o', 's', 'n'};
         
-        selected_opt = dialog_ask(gem_site, *resp, options);
+        selected_opt = dialog_ask(page, *resp, options);
         if(selected_opt == 'o') {
           open_file(
               new_resp->body, 
@@ -1409,7 +1451,7 @@ input_loop:
       else {
         print_to_dialog("Not known mimetype. Do you want to save %s? [y/n]", filename);
         
-        selected_opt = dialog_ask(gem_site, *resp, yes_no_options);
+        selected_opt = dialog_ask(page, *resp, yes_no_options);
         if(selected_opt == 'y') {
           char save_path[PATH_MAX + 1];
           save_file(
@@ -1443,7 +1485,7 @@ input_loop:
         p++;
       *p = '\0';
       
-      char *new_link = handle_link_click(gemini_url, redirect_link, gem_site, *resp);
+      char *new_link = handle_link_click(gemini_url, redirect_link, page, *resp);
       
       if(was_redirected)
         free(gemini_url);
@@ -1474,14 +1516,14 @@ loop:;
           free(new_link);
         // update search bar
         form_driver(search_form, REQ_CLR_FIELD);
-        set_field_buffer(search_field[1], 0, gem_site->url);
+        set_field_buffer(search_field[1], 0, page->url);
         
         info_bar_print("Didn't redirected"); 
         hide_dialog();
         goto err;
       }
       else if(ch == KEY_RESIZE) {
-        resize_screen(gem_site, *resp);
+        resize_screen(page, *resp);
         goto loop;
       }
       else {
@@ -1535,65 +1577,64 @@ loop:;
   }
 
 
-  if(gem_site->url && gem_site->url != gemini_url) {
-    free(gem_site->url);
-    gem_site->url = NULL;
+  if(page->url && page->url != gemini_url) {
+    free(page->url);
+    page->url = NULL;
   }
 
   if(was_redirected)
-    gem_site->url = gemini_url;
+    page->url = gemini_url;
   else
-    gem_site->url = strdup(gemini_url);
+    page->url = strdup(gemini_url);
 
 
   if(*resp != NULL)
     free_resp(*resp);
   
-  if(gem_site->lines)
-    free_lines(gem_site);
+  if(page->lines)
+    free_lines(page);
   
   *resp = new_resp;
 
   int paragraphs_num = 0;
   char **paragraphs = string_to_paragraphs((*resp)->body, &paragraphs_num);
 
-  gem_site->lines = paragraphs_to_lines(
-      gem_site, 
+  page->lines = paragraphs_to_lines(
+      page, 
       paragraphs, 
       paragraphs_num, 
       main_win_x, 
-      &gem_site->lines_num, 
       false
   );
   free_paragraphs(paragraphs, paragraphs_num);
 
   // print the response
   werase(main_win);
-  print_gemini_site(gem_site, main_win, 0, main_win_y, NULL);
+  print_page(page, main_win, 0, main_win_y, NULL);
   
   // update search bar
   form_driver(search_form, REQ_CLR_FIELD);
-  set_field_buffer(search_field[1], 0, gem_site->url);
+  set_field_buffer(search_field[1], 0, page->url);
 
   // bookmarking
-  gem_site->is_bookmarked = false;
-  char *g_p = gem_site->url;
+  page->is_bookmarked = false;
+  char *g_p = page->url;
   if(m_strncmp(g_p, "gemini://") == 0) g_p += 9;
 
   if(!strchr(g_p, '/')) {
-    int len = strlen(gem_site->url);
-    gem_site->url = realloc(gem_site->url, len + 2);
-    gem_site->url[len] = '/';
-    gem_site->url[len + 1] = '\0';
+    int len = strlen(page->url);
+    page->url = realloc(page->url, len + 2);
+    page->url[len] = '/';
+    page->url[len + 1] = '\0';
     
-    g_p = gem_site->url;
+    g_p = page->url;
     if(m_strncmp(g_p, "gemini://") == 0) g_p += 9;
   }
 
   if(bookmarks_links && is_bookmark_saved(bookmarks_links, num_bookmarks_links, g_p) != -1)
-      gem_site->is_bookmarked = true;
+      page->is_bookmarked = true;
   
-  print_is_bookmarked(gem_site->is_bookmarked);
+  print_is_bookmarked(page->is_bookmarked);
   refresh();
 
   switch((*resp)->cert_result) {
@@ -1628,10 +1669,24 @@ err:
   return 0;
 }
 
+static void load_offline_dirs(void) {
+  int n_dirs = 0;
+  char **dir_paragraphs = load_dirs(offline_path, &n_dirs);
+  offline_dirs.lines = paragraphs_to_lines(
+    &offline_dirs,
+    dir_paragraphs, 
+    n_dirs, 
+    main_win_x,
+    true
+  );
+  free_paragraphs(dir_paragraphs, n_dirs);
+  offline.selected_link_index = -1;
+}
+
 int main() {
   // set encoding for emojis
   // however some emojis may not work
-  setlocale(LC_ALL, "en_US.utf8");
+  setlocale(LC_CTYPE, "en_US.utf8");
   // when server closes a pipe
   signal(SIGPIPE, SIG_IGN);
   init_windows();
@@ -1647,7 +1702,7 @@ int main() {
     exit(EXIT_FAILURE);
 
   struct response *resp = NULL;
-  struct gemini_site *gem_site = calloc(1, sizeof(struct gemini_site));
+  struct page_t *gem_page = calloc(1, sizeof(struct page_t));
   
   bookmarks_links = load_bookmarks(&num_bookmarks_links);
   if(bookmarks_links != NULL) {
@@ -1656,108 +1711,153 @@ int main() {
         bookmarks_links, 
         num_bookmarks_links, 
         dialog_subwin_x, 
-        &bookmarks.lines_num,
         true
      );
   }
-  bookmarks.selected_link_index = -1;
+  // TODO
+//  load_offline_dirs();
   // mouse support
   MEVENT event;
   mousemask(BUTTON5_PRESSED | BUTTON4_PRESSED, NULL);
 
   int ch = 0;
   while(ch != KEY_F(1)) {
-  
-    draw_scrollbar(main_win, gem_site, main_win_y, max_x - offset_x);
+    if(!is_offline)
+      draw_scrollbar(main_win, gem_page, main_win_y, max_x - offset_x);
+    else
+      draw_scrollbar(main_win, &offline, main_win_y, max_x - offset_x);
+
     refresh_windows();
 
     ch = getch();
     if(current_focus == MAIN_WINDOW){
       switch(ch) {      
         case '/':
-          current_focus = SEARCH_FORM;
-          form_driver(search_form, REQ_PREV_FIELD);
-          form_driver(search_form, REQ_END_LINE);
-          curs_set(1);
+          if(!is_offline) {
+            current_focus = SEARCH_FORM;
+            form_driver(search_form, REQ_PREV_FIELD);
+            form_driver(search_form, REQ_END_LINE);
+            curs_set(1);
+          }
           break;
         
         case KEY_DOWN:
           if(current_mode == SCROLL_MODE) {
-            for(int i = 0; i < scrolling_velocity; i++)
-              scrolldown(gem_site, main_win, main_win_y, NULL);
+            if(!is_offline)
+              for(int i = 0; i < scrolling_velocity; i++)
+                scrolldown(gem_page, main_win, main_win_y, NULL);
+            else
+              scrolldown(&offline, main_win, main_win_y, NULL);
           }
           else
-            nextlink(gem_site, main_win, main_win_y, NULL);
+            if(!is_offline)
+              nextlink(gem_page, main_win, main_win_y, NULL);
+            else
+              nextlink(&offline, main_win, main_win_y, NULL);
           break;
         
         case KEY_UP:
           if(current_mode == SCROLL_MODE) {
-            for(int i = 0; i < scrolling_velocity; i++)
-              scrollup(gem_site, main_win, NULL);
+            if(!is_offline)
+              for(int i = 0; i < scrolling_velocity; i++)
+                scrollup(gem_page, main_win, NULL);
+            else
+              scrollup(&offline, main_win, NULL);
           }
           else
-            prevlink(gem_site, main_win, main_win_y, NULL);
+            if(!is_offline)
+              prevlink(gem_page, main_win, main_win_y, NULL);
+            else
+              prevlink(&offline, main_win, main_win_y, NULL);
+    
           break;
 
         case KEY_NPAGE:
-          pagedown(gem_site, main_win, main_win_y, NULL);
+          if(!is_offline)
+            pagedown(gem_page, main_win, main_win_y, NULL);
+          else    
+            pagedown(&offline, main_win, main_win_y, NULL);
           break;
         case KEY_PPAGE:
-          pageup(gem_site, main_win, main_win_y, NULL);
+          if(!is_offline)
+            pageup(gem_page, main_win, main_win_y, NULL);
+          else    
+            pageup(&offline, main_win, main_win_y, NULL);
           break;
 
         case 'B':;
-          int res = request_gem_site(
-              MAIN_GEM_SITE, 
-              gem_tls, 
-              gem_site, 
-              &resp 
-          );
-          if(res) {
-            curs_set(0);
-            form_driver(search_form, REQ_CLR_FIELD);
-            set_field_buffer(search_field[1], 0, gem_site->url);
-            refresh();
+          if(!is_offline) {
+            int res = request_gem_page(
+                MAIN_GEM_SITE, 
+                gem_tls, 
+                gem_page, 
+                &resp 
+            );
+            if(res) {
+              curs_set(0);
+              form_driver(search_form, REQ_CLR_FIELD);
+              set_field_buffer(search_field[1], 0, gem_page->url);
+              refresh();
+            }
           }
           break;
 
         // preview the link
         case 'C':;
-          if(gem_site->lines && gem_site->selected_link_index != -1) {
-            show_dialog(INFO);
-            print_to_dialog("%s", gem_site->lines[gem_site->selected_link_index]->link);
-            dialog_ask(gem_site, resp, "");
-            hide_dialog();
+          if(!is_offline) {
+            if(gem_page->lines && gem_page->selected_link_index != -1) {
+              show_dialog(INFO);
+              print_to_dialog("%s", gem_page->lines[gem_page->selected_link_index]->link);
+              dialog_ask(gem_page, resp, "");
+              hide_dialog();
+            }
+          }
+          else {
+            if(offline.lines && offline.selected_link_index != -1) {
+              show_dialog(INFO);
+              print_to_dialog("%s", offline.lines[offline.selected_link_index]->link);
+              dialog_ask(gem_page, resp, "");
+              hide_dialog();
+            }
+
           }
           break;
 
         case 'P':;
-          if(bookmarks.lines == NULL) {
-            if(bookmarks_links == NULL) {
-              info_bar_print("No bookmarks saved!");
-              break;
-            }
+          if(!is_offline) {
+            if(bookmarks.lines == NULL) {
+              if(bookmarks_links == NULL) {
+                info_bar_print("No bookmarks saved!");
+                break;
+              }
 
-            bookmarks.lines = paragraphs_to_lines(
-                &bookmarks, 
-                bookmarks_links, 
-                num_bookmarks_links, 
-                dialog_subwin_x, 
-                &bookmarks.lines_num,
-                true
-             );
+              bookmarks.lines = paragraphs_to_lines(
+                  &bookmarks, 
+                  bookmarks_links, 
+                  num_bookmarks_links, 
+                  dialog_subwin_x, 
+                  true
+               );
+            }
+            
+            show_dialog(BOOKMARKS);
+            print_page(&bookmarks, dialog_subwin, bookmarks.first_line_index, dialog_subwin_y, &print_bookmark_line);
+            current_focus = BOOKMARKS_DIALOG;
+            goto refresh_bookmarks;
           }
-          
-          show_dialog(BOOKMARKS);
-          print_gemini_site(&bookmarks, dialog_subwin, bookmarks.first_line_index, dialog_subwin_y, &print_bookmark_line);
-          current_focus = BOOKMARKS_DIALOG;
-          goto refresh_bookmarks;
+          else {
+            show_dialog(OFFLINE);
+            if(offline_dirs.lines[0])
+              print_page(&offline_dirs, dialog_subwin, 0, dialog_subwin_y, NULL);
+            current_focus = BOOKMARKS_DIALOG;
+            wrefresh(dialog_win);
+          }
           break;        
         
         case 'A':;
-          if(!gem_site->url) break;
+          if(!gem_page->url) break;
 
-          char *url = gem_site->url;
+          char *url = gem_page->url;
           if(m_strncmp(url, "gemini://") == 0) url += 9;
 
           int bm_link_index = is_bookmark_saved(
@@ -1768,7 +1868,7 @@ int main() {
 
           // if it's already saved then delete it
           if(bm_link_index != -1) {
-            gem_site->is_bookmarked = false;
+            gem_page->is_bookmarked = false;
             print_is_bookmarked(false);
           
             // de-highlight the selected link
@@ -1844,33 +1944,35 @@ int main() {
             
             add_bookmark(url);
 
-            int link_lines_num;
+            int prev_lines_num = bookmarks.lines_num;
+            int link_lines_num  = 0, new_lines_num   = 0;
             int old_index = bookmarks.selected_link_index;
+            
             struct screen_line **lines = paragraphs_to_lines(
                 &bookmarks, 
                 &url,
                 1, 
                 dialog_subwin_x, 
-                &link_lines_num,
                 true
-            );  
+            );
 
-            int len = link_lines_num + bookmarks.lines_num;
-            if(bookmarks.lines_num == 0) {
+            link_lines_num = bookmarks.lines_num;
+            new_lines_num = prev_lines_num + link_lines_num;
+            
+            if(prev_lines_num == 0) {
               bookmarks.lines = lines;
             }
             else {
-              bookmarks.lines = realloc(bookmarks.lines, sizeof(char*) * len);
+              bookmarks.lines = realloc(bookmarks.lines, sizeof(char*) * new_lines_num);
               for(int i = 0; i < link_lines_num; i++)
-                bookmarks.lines[bookmarks.lines_num + i] = lines[i];
+                bookmarks.lines[prev_lines_num + i] = lines[i];
             
               free(lines);
             }
             
-            bookmarks.lines_num += link_lines_num;
-            
+            bookmarks.lines_num = new_lines_num;
             bookmarks.selected_link_index = old_index;
-            gem_site->is_bookmarked = true;
+            gem_page->is_bookmarked = true;
             print_is_bookmarked(true);
           }
           break;
@@ -1884,46 +1986,72 @@ int main() {
     
           print_current_mode();
           break;
-        
+       
+//        case 'O':
+//        case 'o':
+//          is_offline = !is_offline; 
+//          print_current_mode();
+//          if(is_offline) {
+//            show_dialog(OFFLINE);
+//            // load_offline_dirs();
+//            if(offline_dirs.lines[0])
+//              print_page(&offline_dirs, dialog_subwin, 0, dialog_subwin_y, NULL);
+//            current_focus = BOOKMARKS_DIALOG;
+//            goto refresh_bookmarks;
+//          }
+//          else {
+//            wclear(main_win); 
+//            wrefresh(main_win);
+//            if(gem_page->lines)
+//              print_page(gem_page, main_win, 0, main_win_y, NULL);
+//          } 
+//          break;
 
-        // TODO
         case 'S':
         case 's':
-          if(!gem_site->url || resp == NULL) break;
+          if(!gem_page->url || resp == NULL) break;
           show_dialog(INFO);
           print_to_dialog("%s", "Do you want to save the gemsite? [y/n]");
-          char selected_opt = dialog_ask(gem_site, resp, yes_no_options);
+          char selected_opt = dialog_ask(gem_page, resp, yes_no_options);
+          char save_path[PATH_MAX + 1];
           if(selected_opt == 'y') 
-            save_gemsite(gem_site->url, resp);
+            if(save_gemsite(save_path, gem_page->url, resp)) {
+              info_message = "";
+              werase(info_bar_win);
+              wprintw(info_bar_win, "Successfully saved to: %s", save_path);
+            }
+          hide_dialog(INFO);
           break;
 
         // enter
         case 10:
           if(current_mode == LINKS_MODE) {
-            char *url = NULL;
-            if(
-               gem_site->selected_link_index == -1 || 
-               gem_site->selected_link_index > gem_site->lines_num
-              ) break;
-            
-            char *link = gem_site->lines[gem_site->selected_link_index]->link;
-            if((url = handle_link_click(gem_site->url, link, gem_site, resp)) == NULL) 
-              break;
+            if(!is_offline) {
+              char *url = NULL;
+              if(
+                 gem_page->selected_link_index == -1 || 
+                 gem_page->selected_link_index > gem_page->lines_num
+                ) break;
+              
+              char *link = gem_page->lines[gem_page->selected_link_index]->link;
+              if((url = handle_link_click(gem_page->url, link, gem_page, resp)) == NULL) 
+                break;
 
-            int res = request_gem_site(
-                url, 
-                gem_tls, 
-                gem_site, 
-                &resp
-            );
+              int res = request_gem_page(
+                  url, 
+                  gem_tls, 
+                  gem_page, 
+                  &resp
+              );
 
-            free(url);
+              free(url);
 
-            if(res) {
-              curs_set(0);
-              form_driver(search_form, REQ_CLR_FIELD);
-              set_field_buffer(search_field[1], 0, gem_site->url);
-              refresh();
+              if(res) {
+                curs_set(0);
+                form_driver(search_form, REQ_CLR_FIELD);
+                set_field_buffer(search_field[1], 0, gem_page->url);
+                refresh();
+              }
             }
           }
           break;
@@ -1937,10 +2065,10 @@ int main() {
         if(getmouse(&event) == OK){ 
           if(event.bstate & BUTTON5_PRESSED)
             for(int i = 0; i < scrolling_velocity; i++)
-              scrolldown(gem_site, main_win, main_win_y, NULL);
+              scrolldown(gem_page, main_win, main_win_y, NULL);
           else if (event.bstate & BUTTON4_PRESSED)
             for(int i = 0; i < scrolling_velocity; i++)
-              scrollup(gem_site, main_win, NULL);
+              scrollup(gem_page, main_win, NULL);
         }
         break;
       }
@@ -1952,8 +2080,8 @@ int main() {
         case KEY_UP:
           current_focus = MAIN_WINDOW;
           curs_set(0);
-          if(gem_site->url)
-            set_field_buffer(search_field[1], 0, gem_site->url);
+          if(gem_page->url)
+            set_field_buffer(search_field[1], 0, gem_page->url);
           form_driver(search_form, REQ_PREV_FIELD);
           form_driver(search_form, REQ_END_LINE);
           break;
@@ -2004,10 +2132,10 @@ int main() {
           form_driver(search_form, REQ_PREV_FIELD);
           form_driver(search_form, REQ_END_LINE);
 
-          request_gem_site(
+          request_gem_page(
               url, 
               gem_tls, 
-              gem_site, 
+              gem_page, 
               &resp
           );
           
@@ -2022,25 +2150,45 @@ int main() {
       switch(ch) {
         case KEY_DOWN:
           if(current_mode == SCROLL_MODE) {
-            for(int i = 0; i < scrolling_velocity; i++)
-              scrolldown(&bookmarks, dialog_subwin, dialog_subwin_y, &print_bookmark_line);
+            if(!is_offline)
+              for(int i = 0; i < scrolling_velocity; i++)
+                scrolldown(&bookmarks, dialog_subwin, dialog_subwin_y, &print_bookmark_line);
+            else
+              for(int i = 0; i < scrolling_velocity; i++)
+                scrolldown(&offline_dirs, dialog_subwin, dialog_subwin_y, NULL);
+    
           }
           else
-            nextlink(&bookmarks, dialog_subwin, dialog_subwin_y, &print_bookmark_line);
-          break;
+            if(!is_offline)
+              nextlink(&bookmarks, dialog_subwin, dialog_subwin_y, &print_bookmark_line);
+            else 
+              nextlink(&offline_dirs, dialog_subwin, dialog_subwin_y, NULL);
+        break;
         case KEY_UP:
           if(current_mode == SCROLL_MODE) {
-            for(int i = 0; i < scrolling_velocity; i++)
-              scrollup(&bookmarks, dialog_subwin, &print_bookmark_line);
+            if(!is_offline)
+              for(int i = 0; i < scrolling_velocity; i++)
+                scrollup(&bookmarks, dialog_subwin, &print_bookmark_line);
+            else
+              scrollup(&offline_dirs, dialog_subwin, NULL);
           }
           else
-            prevlink(&bookmarks, dialog_subwin, dialog_subwin_y, &print_bookmark_line);
+            if(!is_offline)
+              prevlink(&bookmarks, dialog_subwin, dialog_subwin_y, &print_bookmark_line);
+            else  
+              prevlink(&offline_dirs, dialog_subwin, dialog_subwin_y, NULL);
           break;
         case KEY_NPAGE:
-          pagedown(&bookmarks, dialog_subwin, dialog_subwin_y, &print_bookmark_line);
+          if(!is_offline)
+            pagedown(&bookmarks, dialog_subwin, dialog_subwin_y, &print_bookmark_line);
+          else
+            pagedown(&offline_dirs, dialog_subwin, dialog_subwin_y, NULL);
           break;
         case KEY_PPAGE:
-          pageup(&bookmarks, dialog_subwin, dialog_subwin_y, &print_bookmark_line);
+          if(!is_offline)
+            pageup(&bookmarks, dialog_subwin, dialog_subwin_y, &print_bookmark_line);
+          else
+            pageup(&offline_dirs, dialog_subwin, dialog_subwin_y, NULL);
           break;
         case KEY_LEFT:
         case KEY_RIGHT:
@@ -2067,19 +2215,104 @@ int main() {
           print_current_mode();
           break;
         case 10:
-          if(bookmarks.selected_link_index == -1) break;
-          char *url = bookmarks.lines[bookmarks.selected_link_index]->link;
-          if(!url) break;
-          int res = request_gem_site(
-              url, 
-              gem_tls, 
-              gem_site, 
-              &resp
-          );
+          if(!is_offline) {
+            if(bookmarks.selected_link_index == -1) break;
+            
+            char *url = bookmarks.lines[bookmarks.selected_link_index]->link;
+            if(!url) break;
+      
+            int res = request_gem_page(
+                url, 
+                gem_tls, 
+                gem_page, 
+                &resp
+            );
 
-          if(res) {
-            hide_dialog();
-            current_focus = MAIN_WINDOW;
+            if(res) {
+              hide_dialog();
+              current_focus = MAIN_WINDOW;
+            }
+          }
+          else {
+            if(offline_dirs.selected_link_index == -1) break;
+              int n_dirs = 0;
+              char tmp_path[PATH_MAX + 1] = "";
+              strcpy(tmp_path, SAVED_DIR);
+              strcat(tmp_path, offline_path);
+//              if(strcmp(offline_dirs.lines[offline_dirs.selected_link_index]->text, "../") == 0) 
+              strcat(tmp_path, offline_dirs.lines[offline_dirs.selected_link_index]->text);
+              struct stat statbuf;
+              stat(tmp_path, &statbuf);
+              bool is_dir = S_ISDIR(statbuf.st_mode);
+
+              if(is_dir) {
+                strcpy(tmp_path, offline_path);
+                strcat(tmp_path, offline_dirs.lines[offline_dirs.selected_link_index]->text);
+                char **dir_paragraphs = load_dirs(tmp_path, &n_dirs);
+                if(offline_dirs.lines) 
+                  free_lines(&offline_dirs);
+                
+                offline_dirs.lines = paragraphs_to_lines(
+                  &offline_dirs,
+                  dir_paragraphs, 
+                  n_dirs, 
+                  main_win_x, 
+                  true
+                );
+                free_paragraphs(dir_paragraphs, n_dirs);
+                wclear(dialog_subwin);
+                print_page(&offline_dirs, dialog_subwin, 0, dialog_subwin_y, NULL);
+                wrefresh(dialog_win);
+                strcpy(offline_path, tmp_path);
+              }
+              else {
+                
+                strcpy(tmp_path, SAVED_DIR);
+                strcat(tmp_path, offline_path);
+                strcat(tmp_path, offline_dirs.lines[offline_dirs.selected_link_index]->text);
+                
+                fprintf(stderr, "%s", tmp_path);
+                FILE *f = fopen(tmp_path, "rb");
+                if(!f) {
+                  fprintf(stderr, "cant open the file");
+                  break;
+                  // TODO do something with it
+                }
+                
+                fseek(f, 0, SEEK_END);
+                int fsize = ftell(f);
+                rewind(f);
+
+                char *buffer = (char*) malloc(sizeof(char) * fsize + 1);
+                if(buffer == NULL) {
+                  fprintf(stderr, "%s", "cant alloc memory for buffer\n"); 
+                  exit(EXIT_FAILURE);
+                 }
+
+                int result = fread(buffer, 1, fsize, f);
+                buffer[fsize] = '\0';
+                if(result != fsize) {
+                  fprintf(stderr, "%s", "reading error\n"); 
+                  exit(EXIT_FAILURE);
+                }
+                fclose(f);
+          
+                int n_paragraphs = 0;
+                char **paragraphs = string_to_paragraphs(buffer, &n_paragraphs);
+                offline.lines = paragraphs_to_lines(
+                  &offline, 
+                  paragraphs, 
+                  n_paragraphs, 
+                  main_win_x, 
+                  false
+                );
+      
+                free_paragraphs(paragraphs, n_paragraphs);
+                wclear(main_win);
+                print_page(&offline, main_win, 0, main_win_y, NULL);
+                hide_dialog();
+                current_focus = MAIN_WINDOW;
+              }
           }
 
           break;
@@ -2091,14 +2324,14 @@ refresh_bookmarks:
     }
     
     if(ch == KEY_RESIZE){
-      resize_screen(gem_site, resp);
+      resize_screen(gem_page, resp);
     }
   } 
   free_lines(&bookmarks);
-  if(gem_site->url)
-    free(gem_site->url);
-  free_lines(gem_site);
-  free(gem_site);
+  if(gem_page->url)
+    free(gem_page->url);
+  free_lines(gem_page);
+  free(gem_page);
   tls_free(gem_tls);
   free_resp(resp);
   free_windows();

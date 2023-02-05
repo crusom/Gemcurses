@@ -2,9 +2,9 @@ CC=gcc
 CFLAGS=-I . -Wextra -Wall -Wpedantic -rdynamic
 #CFLAGS += -Wconversion
 #optional debugging flag
-#CFLAGS += -ggdb3
+CFLAGS += -ggdb3
 
-OBJ = tofu.o tls.o bookmarks.o util.o tui.o
+OBJ = tofu.o tls.o bookmarks.o util.o tui.o wcwidth.o utf8.o
 
 LIBS = -lssl -lcrypto -lncursesw -lformw -lpanelw
 

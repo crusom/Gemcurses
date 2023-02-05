@@ -76,6 +76,8 @@ static int ssl_session_callback(SSL *ssl, SSL_SESSION *session) {
 
 // for debugging
 static void ssl_info_callback(const SSL * ssl, int where, int ret){
+  (void)ret; // unused
+  
   if(where & SSL_CB_HANDSHAKE_START){
     SSL_SESSION *session = SSL_get_session(ssl);
     if(session) {
@@ -112,7 +114,7 @@ static SSL_SESSION *tls_get_session(struct gemini_tls *gem_tls, const char *host
 }
 
 int parse_url(const char **error_message, char *hostname, char **host_resource, char port[6]) {
-  int gemini_scheme_length = strlen(GEMINI_SCHEME);
+  size_t gemini_scheme_length = strlen(GEMINI_SCHEME);
   // at first delete gemini scheme from hostname if it is included
   if(strncmp(hostname, GEMINI_SCHEME, gemini_scheme_length) == 0) {
     // + 1 for '\0'
@@ -150,8 +152,8 @@ int parse_url(const char **error_message, char *hostname, char **host_resource, 
   if(host_resource != NULL) {
     char *tmp_resource = strchr(hostname, '/');
     if(tmp_resource != NULL) {
-      int resource_offset = tmp_resource - hostname;
-      int resource_lenght = strlen(hostname) - resource_offset;
+      size_t resource_offset = (size_t)(tmp_resource - hostname);
+      size_t resource_lenght = strlen(hostname) - resource_offset;
       *host_resource = (char *)malloc(resource_lenght + 1);
       
       memcpy(*host_resource, hostname + resource_offset, resource_lenght);
@@ -367,7 +369,7 @@ struct gemini_tls* init_tls(int flag) {
   
   SSL_CTX_set_verify_depth(gem_tls->ctx, 4);
   // disable SSL cause its obolete and dangerous
-  const long flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
+  const uint64_t flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
   SSL_CTX_set_options(gem_tls->ctx, flags);
 
   gem_tls->bio_web = BIO_new_ssl_connect(gem_tls->ctx);
@@ -538,8 +540,9 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   }
 
   char url[1024];
-  unsigned int url_len = snprintf(url, sizeof(url), (GEMINI_SCHEME "%s%s" CLRN), hostname, host_resource);
-  if(url_len > sizeof(url)) {
+  int url_len = snprintf(url, sizeof(url), (GEMINI_SCHEME "%s%s" CLRN), hostname, host_resource);
+  assert(url_len > 0);
+  if((size_t)url_len > sizeof(url)) {
     resp->error_message = "Too long url\n";
     goto error;
   }

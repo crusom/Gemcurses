@@ -61,7 +61,7 @@ int tofu_load_certs(struct known_host **host) {
   char *line = NULL;
 
   while(getline(&line, &n, f) != -1) {
-    int ln = strlen(line);
+    size_t ln = strlen(line);
     if(line[ln - 1] == '\n') {
       line[ln - 1] = '\0';
     }

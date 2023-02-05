@@ -1,8 +1,8 @@
 #ifndef GEMINI_TLS_H
 #define GEMINI_TLS_H
 
+#include <stddef.h>
 #include "tofu.h"
-
 enum response_status_codes {
 // 1X INPUT
   CODE_INPUT = 10,
@@ -33,7 +33,7 @@ enum response_status_codes {
 struct response {
   char *body;
   const char *error_message;
-  int body_size;
+  size_t body_size;
   enum tofu_check_results cert_result;
   enum response_status_codes status_code;
   bool was_resumpted;
