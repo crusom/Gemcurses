@@ -21,6 +21,8 @@ enum {
   TLS_DEBUGGING = 1 << 0,
 };
 
+static int all_status_codes[] = {10, 11, 20, 30, 31, 40, 41, 42, 43, 44, 50, 51, 52, 53, 59, 60, 61, 62};
+
 struct session_reuse {
   char *hostname;
   SSL_SESSION *session;
@@ -111,6 +113,25 @@ static SSL_SESSION *tls_get_session(struct gemini_tls *gem_tls, const char *host
   }
 
   return NULL;
+}
+
+static void tls_remove_session(struct gemini_tls *gem_tls, SSL_SESSION *session) {
+  struct session_reuse *sess_p = gem_tls->session;
+
+  if(sess_p->session == session) {
+    if(sess_p->next)
+      gem_tls->session = sess_p->next;
+    else
+      gem_tls->session = NULL;
+  }    
+
+  while(sess_p) {
+    if(sess_p->next && sess_p->next->session == session){    
+      sess_p->next = sess_p->next->next;
+      break;
+    }
+    sess_p = sess_p->next;
+  }
 }
 
 int parse_url(const char **error_message, char *hostname, char **host_resource, char port[6]) {
@@ -509,7 +530,8 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
 
   SSL_SESSION *session;
   if((session = tls_get_session(gem_tls, hostname_with_portn)) != NULL) {
-    SSL_set_session(gem_tls->ssl, session);
+    if(SSL_SESSION_is_resumable(session))
+      SSL_set_session(gem_tls->ssl, session);
   }
 
   SSL_set_fd(gem_tls->ssl, fd);
@@ -522,8 +544,12 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
 
   if(SSL_session_reused(gem_tls->ssl) == 1)
     resp->was_resumpted = true;
-  else
+  else {
+    // FIXME idk if that's sane, OPENSSL api is fucked up
     resp->was_resumpted = false;
+    if(session)
+      tls_remove_session(gem_tls, session);
+  }
 
   X509* cert = SSL_get_peer_certificate(gem_tls->ssl);
   if(cert == NULL) {
@@ -619,8 +645,10 @@ int tls_read(struct gemini_tls *gem_tls, struct response *resp) {
 struct response *tls_request(struct gemini_tls *gem_tls, const char *h) {
     
   struct response *resp = calloc(1, sizeof(struct response));
-  if(resp == NULL) return NULL;
-
+  if(resp == NULL) {
+    exit(EXIT_FAILURE);
+    //return NULL;
+  }
   if(!tls_connect(gem_tls, h, resp)) {
     tls_reset(gem_tls);
     return resp;
@@ -629,14 +657,30 @@ struct response *tls_request(struct gemini_tls *gem_tls, const char *h) {
   tls_read(gem_tls, resp);
   tls_reset(gem_tls);
 
-  if(resp->body && resp->body[0] && resp->body[1]) {
+  char *crlf;
+
+  // <STATUS><SPACE><META><CR><LF>, minimal response is 5 bytes
+  if(resp->body_size >= 5 && isdigit(resp->body[0]) && 
+  isdigit(resp->body[1]) && resp->body[2] == ' ' && 
+  (crlf = strstr(resp->body, "\r\n")) && 
+  (crlf - resp->body < 1024 + 3)) {
+
     int resp_num;
     resp_num = resp->body[1] - '0';
     resp_num += 10 * (resp->body[0] - '0');
     resp->status_code = resp_num;
+    bool valid_response_code = false;
+    for(size_t i = 0; i < sizeof(all_status_codes)/sizeof(all_status_codes[0]); i++) {
+      if(resp_num == all_status_codes[i]) {
+        valid_response_code = true;
+        break;
+      }
+    }
+    if(valid_response_code == false)
+      resp->error_message = "Invalid status code!";
   }
   else {
-    resp->error_message = "Can't connect to the host";
+    resp->error_message = "Can't connect to the host, invalid response header!";
     resp->status_code = 0;
   }
 
@@ -690,7 +734,7 @@ void tls_free(struct gemini_tls *gem_tls) {
 }
 
 // test usage
-
+//
 //int main(int argc, char *argv[]) {
 //
 //  if(argc < 2 || !argv[argc - 1]) return -1;

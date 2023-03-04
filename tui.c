@@ -6,13 +6,12 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <wctype.h>
-
+#include <errno.h>
 #include "tls.h"
 #include "page.h"
 #include "bookmarks.h"
 #include "util.h"
 #include "utf8.h"
-
 #define SAVED_DIR "saved/"
 #define MAIN_GEM_SITE "warmedal.se/~antenna/"
 #define set_main_win_x(max_x) main_win_x = max_x - offset_x - 1
@@ -180,6 +179,7 @@ static void init_search_form(bool resize) {
   }
   // [1]
   search_field[1] = new_field(search_bar_height, max_x - 6 - 2, 0, 6, 0, 0);
+  
   set_field_back(search_field[1], A_UNDERLINE);
   set_field_opts(search_field[1], O_VISIBLE | O_PUBLIC | O_ACTIVE | O_EDIT);
   // 1024 is max url length
@@ -490,7 +490,7 @@ static struct screen_line** paragraphs_to_lines(
     // so what we do, is we give attr A_BOLD to everything, that's before the slash mark '/' in a url
     bool make_domain_bold = false;
  
-    if(strcmp(line_str, "```") == 0)
+    if(m_strncmp(line_str, "```") == 0)
       is_preformatted_mode = !is_preformatted_mode;
    
     if(set_links_to_paragraphs == false) {
@@ -611,6 +611,25 @@ static void info_bar_print(const char *str) {
   wrefresh(info_bar_win);
 }
 
+static void info_bar_clear(void) {
+  info_message = "";
+  werase(info_bar_win);
+}
+
+static void print_mime_error(enum mime_error mime_err) {
+  switch(mime_err){
+    case MIME_ERROR_NOT_UTF8:
+      info_bar_print("Mime is not utf8"); break;
+    case MIME_ERROR_TOO_LONG:
+      info_bar_print("Mime exceeds 1024 bytes"); break;
+    case MIME_ERROR_MORE_THAN_ONE_SPACE:
+      info_bar_print("More than one space after status"); break;
+    case MIME_ERROR_NO_SPACE_AFTER_STATUS:
+      info_bar_print("Invalid character after status"); break;
+    default:
+      assert(0);
+  };
+}
 
 static void printline(WINDOW *win, struct screen_line *line, int x, int y) {
   // scrollok scrolls automatically to the next line when 
@@ -1026,7 +1045,6 @@ start:
 
 
 
-
 // ########## DIALOG ##########
 
 static void show_dialog(enum dialog_types dialog_type) {
@@ -1112,18 +1130,16 @@ static char* handle_link_click(char *base_url, char *link, struct page_t *page, 
   if(!link)
     goto nullret;
 
-  enum protocols protocol = get_protocol(link);
-  switch(protocol) {
-    case GEMINI:
+  if(get_protocol(link) == GEMINI) {
       if(link[0] == '/')
         link += 2;
 
       free(new_url);
       return strdup(link);
-    case GOPHER:
-    case MAIL:
-    case HTTP:
-    case HTTPS:
+  } 
+  // ":" is a reserved character, so if it's occurs in uri, then, it probably shouldn't be a relative link
+  // however FIXME i need to crawl more geminispace
+  else if(strstr(link, ":")) {
       show_dialog(INFO);
       print_to_dialog("Open %s? [y/n]", link);
         
@@ -1133,89 +1149,88 @@ static char* handle_link_click(char *base_url, char *link, struct page_t *page, 
 
       hide_dialog();
       goto nullret;
-    
-    default: {
-      assert(new_url);
-      int url_length = strlen(new_url);
-      char *p = new_url;
+  }
+  // relative link
+  else {
+    assert(new_url);
+    int url_length = strlen(new_url);
+    char *p = new_url;
 
-      // cut the gemini scheme from the base url
-      if(m_strncmp(new_url, "gemini://") == 0) p += 9;
-      // if link has no directory then add it
-      if(strchr(p, '/') == NULL) {
-        url_length += 1;
-        new_url = realloc(new_url, url_length + 1);
-        new_url[url_length - 1] = '/';
-        new_url[url_length]     = '\0';
-        
-        p = new_url;
-        if(m_strncmp(new_url, "gemini://") == 0) p += 9;
-      }
-
-      // if there's an absolute path
-      if(m_strncmp(link, "/") == 0) {
-        link++;
-        char *chr;
-        if((chr = strchr(p, '/')) != NULL) {
-          ++chr;
-          *chr = '\0';
-        }
-      }
-      // if we need to go two or more directories up, then path travel
-      else if(m_strncmp(link, "..") == 0 || m_strncmp(link, "./") == 0) {
-        char *chr;
-        
-        if(link[1] == '/') {
-          if(link[2] == '.')
-            link += 2;
-          else
-            link += 1;
-          
-          if((chr = strrchr(p, '/')) != NULL)
-            *chr = '\0';
-        }
-
-        // at first, clear the current directory
-        if(m_strncmp(link, "..") == 0) {
-          if((chr = strrchr(p, '/')) != NULL)
-            *(chr) = '\0';
-        }
-        // then go back one directory up, as long as there'is ".."
-        while(m_strncmp(link, "..") == 0) {
-          if((chr = strrchr(p, '/')) != NULL)
-            *(chr) = '\0';
-          link += 2;
-          if(m_strncmp(link, "/") == 0) 
-            link++;
-        }
-        // we need to concentate '/' to the path, so check if we
-        // didnt go too far, and adjust
-        if(*(link - 1) == '/')
-          link--;
-      }
-      // if we need to go one directory up
-      else if(m_strncmp(link, ".") == 0) {
-        char *chr;
-        if((chr = strrchr(p, '/')) != NULL) {
-          *(chr) = '\0';
-        }
-        link++;
-      }
-      // just concatenate it to the current path
-      else {
-        char *chr;
-        if((chr = strrchr(p, '/')) != NULL) {
-          ++chr;
-          if(*chr != '\0')
-            *chr = '\0';
-        }
-      }
+    // cut the gemini scheme from the base url
+    if(m_strncmp(new_url, "gemini://") == 0) p += 9;
+    // if link has no directory then add it
+    if(strchr(p, '/') == NULL) {
+      url_length += 1;
+      new_url = realloc(new_url, url_length + 1);
+      new_url[url_length - 1] = '/';
+      new_url[url_length]     = '\0';
       
-      new_url = realloc(new_url, url_length + strlen(link) + 1);
-      strcat(new_url, link);
-      return new_url;
+      p = new_url;
+      if(m_strncmp(new_url, "gemini://") == 0) p += 9;
     }
 
+    // if there's an absolute path
+    if(m_strncmp(link, "/") == 0) {
+      link++;
+      char *chr;
+      if((chr = strchr(p, '/')) != NULL) {
+        ++chr;
+        *chr = '\0';
+      }
+    }
+    // if we need to go two or more directories up, then path travel
+    else if(m_strncmp(link, "..") == 0 || m_strncmp(link, "./") == 0) {
+      char *chr;
+      
+      if(link[1] == '/') {
+        if(link[2] == '.')
+          link += 2;
+        else
+          link += 1;
+        
+        if((chr = strrchr(p, '/')) != NULL)
+          *chr = '\0';
+      }
+
+      // at first, clear the current directory
+      if(m_strncmp(link, "..") == 0) {
+        if((chr = strrchr(p, '/')) != NULL)
+          *(chr) = '\0';
+      }
+      // then go back one directory up, as long as there'is ".."
+      while(m_strncmp(link, "..") == 0) {
+        if((chr = strrchr(p, '/')) != NULL)
+          *(chr) = '\0';
+        link += 2;
+        if(m_strncmp(link, "/") == 0) 
+          link++;
+      }
+      // we need to concentate '/' to the path, so check if we
+      // didnt go too far, and adjust
+      if(*(link - 1) == '/')
+        link--;
+    }
+    // if we need to go one directory up
+    else if(m_strncmp(link, ".") == 0) {
+      char *chr;
+      if((chr = strrchr(p, '/')) != NULL) {
+        *(chr) = '\0';
+      }
+      link++;
+    }
+    // just concatenate it to the current path
+    else {
+      char *chr;
+      if((chr = strrchr(p, '/')) != NULL) {
+        ++chr;
+        if(*chr != '\0')
+          *chr = '\0';
+      }
+    }
+    
+    new_url = realloc(new_url, url_length + strlen(link) + 1);
+    strcat(new_url, link);
+    return new_url;
   }
 
 nullret:
@@ -1292,11 +1307,11 @@ func_start:
     info_bar_print(new_resp->error_message);
     goto err;
   }
-
-  if(new_resp->body == NULL || new_resp->body[0] == '\0') {
-    info_bar_print("Can't connect to the host");
-    goto err;
-  }
+  assert(new_resp->body);
+//  if(new_resp->body == NULL || new_resp->body[0] == '\0' || new_resp->body_size < 5) {
+//    info_bar_print("Can't connect to the host");
+//    goto err;
+//  }
 
   switch(new_resp->status_code) {
     case CODE_SENSITIVE_INPUT:
@@ -1327,6 +1342,7 @@ input_loop:
           curs_set(0);
           set_field_buffer(search_field[0], 0, "url:");
           set_field_buffer(search_field[1], 0, page->url);
+          info_bar_clear();
           goto err;
 
         case KEY_LEFT:
@@ -1385,17 +1401,20 @@ input_loop:
       break;
     
     case CODE_SUCCESS:;
-      char *mime_type = get_mime_type(new_resp->body);
-      if(!mime_type) {
-        info_bar_print("No mimetype in response");
-        goto err;
+      char *mime_type = NULL;
+      enum mime_error mime_err = get_mime_type(new_resp->body, &mime_type);
+      if(mime_err != MIME_ERROR_NONE) {
+          print_mime_error(mime_err);
+          goto err;
       }
-
-      if(strcmp(mime_type, "text/gemini") == 0 || strcmp(mime_type, "text/plain") == 0) {
+    
+      if(strcmp(mime_type, "text/gemini") == 0 || strcmp(mime_type, "text/plain") == 0 ||
+         m_strncmp(new_resp->body + 3, "\r\n") == 0) {
         free(mime_type);
         break;
       }
-      
+      // if the mime_type is something else than a gempage, then let's save it, with the filename of the requested resource   
+  
       char *filename = strrchr(gemini_url, '/');
       if(filename == NULL || strlen(filename) == 1) {
         info_bar_print("Should be a file, not a directory?");
@@ -1420,14 +1439,17 @@ input_loop:
         
         selected_opt = dialog_ask(page, *resp, options);
         if(selected_opt == 'o') {
-          open_file(
+          // TODO
+          if(open_file(
               new_resp->body, 
               filename, 
               default_app, 
               new_resp->body_size, 
               header_offset
-           );
-          info_bar_print("Opened a file");
+           ))
+            info_bar_print("Opened a file");
+//            else
+//              info_bar_print(strerror(errno));
         }
         else if(selected_opt == 's') {
           char save_path[PATH_MAX + 1];
@@ -1669,19 +1691,19 @@ err:
   return 0;
 }
 
-static void load_offline_dirs(void) {
-  int n_dirs = 0;
-  char **dir_paragraphs = load_dirs(offline_path, &n_dirs);
-  offline_dirs.lines = paragraphs_to_lines(
-    &offline_dirs,
-    dir_paragraphs, 
-    n_dirs, 
-    main_win_x,
-    true
-  );
-  free_paragraphs(dir_paragraphs, n_dirs);
-  offline.selected_link_index = -1;
-}
+//static void load_offline_dirs(void) {
+//  int n_dirs = 0;
+//  char **dir_paragraphs = load_dirs(offline_path, &n_dirs);
+//  offline_dirs.lines = paragraphs_to_lines(
+//    &offline_dirs,
+//    dir_paragraphs, 
+//    n_dirs, 
+//    main_win_x,
+//    true
+//  );
+//  free_paragraphs(dir_paragraphs, n_dirs);
+//  offline.selected_link_index = -1;
+//}
 
 int main() {
   // set encoding for emojis
@@ -2026,6 +2048,7 @@ int main() {
         // enter
         case 10:
           if(current_mode == LINKS_MODE) {
+            if(!resp) break;
             if(!is_offline) {
               char *url = NULL;
               if(

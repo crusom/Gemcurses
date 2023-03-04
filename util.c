@@ -65,15 +65,23 @@ int get_valid_query(char **query) {
   return 1;
 }
 
-char *get_mime_type(char *str) {
+enum mime_error get_mime_type(char *str, char **mime_ret) {
   if(str == NULL)
-    return NULL;
+    return MIME_ERROR_NO_MIME;
   
-  for(int i = 0; i < 3; i++) {
+  for(int i = 0; i < 2; i++) {
     str++;
     if(*str == '\0')
-      return NULL;
+      return MIME_ERROR_NO_MIME;
   }
+  
+  if(!isspace(*str))
+    return MIME_ERROR_NO_SPACE_AFTER_STATUS;    
+
+  str++;
+
+  if(isspace(*str))
+    return MIME_ERROR_MORE_THAN_ONE_SPACE;
 
   char *p = str;
   int len = 0;
@@ -83,7 +91,9 @@ char *get_mime_type(char *str) {
   }
 
   if(len == 0)
-    return NULL;
+    return MIME_ERROR_NO_MIME;
+  else if(len > 1024)
+    return MIME_ERROR_TOO_LONG;
 
   char *res = malloc(len + 1);
   if(res == NULL) {
@@ -94,7 +104,8 @@ char *get_mime_type(char *str) {
   strncpy(res, p, len);
   res[len] = '\0';
 
-  return res; 
+  *mime_ret = res;
+  return MIME_ERROR_NONE;
 }
 
 void open_link(char *link) {

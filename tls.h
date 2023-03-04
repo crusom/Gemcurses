@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include "tofu.h"
+
 enum response_status_codes {
 // 1X INPUT
   CODE_INPUT = 10,
