@@ -1,4 +1,5 @@
 To add:
+  -ERR_print_errors_fp
   -basic fuzzer
   -finger support
   -offline support
@@ -13,3 +14,4 @@ To test:
   -test input (gemini://gemini.ctrl-c.club/~stack/gemlog/2021-11-30.noncompliant.gmi)
   -forms
 gemini://spellbinding.tilde.cafe/ crashes?
+  -use XDG dirs, not local https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html

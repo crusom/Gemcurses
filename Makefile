@@ -1,10 +1,13 @@
 CC=gcc
+#CC=afl-gcc
 CFLAGS=-I . -Wextra -Wall -Wpedantic -rdynamic
 #CFLAGS += -Wconversion
 #optional debugging flag
 CFLAGS += -ggdb3
 
-OBJ = tofu.o tls.o bookmarks.o util.o tui.o wcwidth.o utf8.o
+SRC_DIR = src
+_OBJ = tofu.o tls.o bookmarks.o util.o tui.o wcwidth.o utf8.o
+OBJ = $(patsubst %,$(SRC_DIR)/%,$(_OBJ))
 
 LIBS = -lssl -lcrypto -lncursesw -lformw -lpanelw
 
@@ -17,5 +20,8 @@ LDFLAGS = -L/usr/local/ssl/lib
 gemcurses: $(OBJ)
 		$(CC) -o $@ $^ $(LDFLAGS) $(CFLAGS) $(LIBS)
 
+install:
+	cp gemcurses /usr/local/bin/
+
 clean:
-	rm -rf netsim $(OBJ)
+	rm -rf netsim $(SRC_DIR)/$(OBJ)

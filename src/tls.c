@@ -287,7 +287,7 @@ static int tls_create_cert() {
 
   ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
   X509_gmtime_adj(X509_get_notBefore(x509), 0);
-  X509_gmtime_adj(X509_get_notAfter(x509), 31536000L);
+  X509_gmtime_adj(X509_get_notAfter(x509), 2137 * 31536000L);
 
   X509_set_pubkey(x509, pkey);
   
@@ -372,6 +372,7 @@ struct gemini_tls* init_tls(int flag) {
       goto cleanup;
     }
   }
+  printf("%x\n", SSL_CTX_use_certificate_file(gem_tls->ctx, CERT_FILENAME, SSL_FILETYPE_PEM));
 
   if(SSL_CTX_use_certificate_file(gem_tls->ctx, CERT_FILENAME, SSL_FILETYPE_PEM) != 1) {
     fprintf(stderr, "ERROR: Can't load client cert\n");

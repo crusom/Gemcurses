@@ -62,7 +62,7 @@ const char *protocols_strings[] = {
   [SPARTAN] = " [spartan]",
 };
 
-const char yes_no_options[] = {'y', 'n'};
+const char yes_no_options[] = {'y', 'n', '\0'};
 bool is_dialog_hidden = true;
 
 struct page_t bookmarks;
@@ -1741,6 +1741,10 @@ int main() {
   // mouse support
   MEVENT event;
   mousemask(BUTTON5_PRESSED | BUTTON4_PRESSED, NULL);
+  
+  // for fuzzing  
+//  int flags = fcntl(0, F_GETFL, 0);
+//  fcntl(0, F_SETFL, flags | O_NONBLOCK);
 
   int ch = 0;
   while(ch != KEY_F(1)) {
@@ -1752,6 +1756,10 @@ int main() {
     refresh_windows();
 
     ch = getch();
+    // for fuzzing
+//    if (ch == -1)
+//      return 0;
+
     if(current_focus == MAIN_WINDOW){
       switch(ch) {      
         case '/':
