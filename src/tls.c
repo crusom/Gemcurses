@@ -366,13 +366,11 @@ struct gemini_tls* init_tls(int flag) {
 
 
   // https://stackoverflow.com/questions/256405/programmatically-create-x509-certificate-using-openssl/15082282#15082282
-
   if(access(CERT_FILENAME, F_OK ) != 0 || access(KEY_FILENAME, F_OK) != 0) {
     if(tls_create_cert() != 0) {
       goto cleanup;
     }
   }
-  printf("%x\n", SSL_CTX_use_certificate_file(gem_tls->ctx, CERT_FILENAME, SSL_FILETYPE_PEM));
 
   if(SSL_CTX_use_certificate_file(gem_tls->ctx, CERT_FILENAME, SSL_FILETYPE_PEM) != 1) {
     fprintf(stderr, "ERROR: Can't load client cert\n");

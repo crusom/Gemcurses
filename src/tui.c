@@ -1815,6 +1815,26 @@ int main() {
             pageup(&offline, main_win, main_win_y, NULL);
           break;
 
+//        case 'R':;
+//          if(!is_offline) {
+//            if(gem_page != NULL && gem_page->url != NULL) {
+//              int res = request_gem_page(
+//                  gem_page->url, 
+//                  gem_tls, 
+//                  gem_page, 
+//                  &resp 
+//              );
+//              if(res) {
+//                curs_set(0);
+//                form_driver(search_form, REQ_CLR_FIELD);
+//                set_field_buffer(search_field[1], 0, gem_page->url);
+//                refresh();
+//              } 
+//              info_bar_print("Refreshed!");
+//            }
+//          }
+//        break;
+
         case 'B':;
           if(!is_offline) {
             int res = request_gem_page(
