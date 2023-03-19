@@ -1,4 +1,5 @@
 #include "tofu.h"
+#include "util.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -37,8 +38,8 @@ save:
 int tofu_save_cert(struct known_host **host, char *hostname, char *fingerprint) {
   FILE *f = fopen(host_filename, "a");
   if(f == NULL)
-    return 0;
-  
+    ERROR_LOG_AND_EXIT("ERROR: Can't open \"%s\" file", host_filename);  
+
   fprintf(f, "%s %s %s\n", hostname,
              "SHA-512", fingerprint);
   fclose(f);
@@ -54,7 +55,7 @@ int tofu_save_cert(struct known_host **host, char *hostname, char *fingerprint) 
 int tofu_load_certs(struct known_host **host) {
   FILE *f = fopen(host_filename, "r");
   if(f == NULL)
-    return 0;
+    ERROR_LOG_AND_EXIT("ERROR: Can't open \"%s\" file", host_filename);  
     
   size_t n = 0;
   int lineno = 1;
@@ -67,6 +68,8 @@ int tofu_load_certs(struct known_host **host) {
     }
 
     struct known_host *tmp_host = calloc(1, sizeof(struct known_host));
+    if(tmp_host == NULL)
+      MALLOC_ERROR;
 
     char *tok = strtok(line, " ");
     assert(tok);
@@ -94,4 +97,3 @@ int tofu_load_certs(struct known_host **host) {
   free(line);
   return 1;
 }
-

@@ -1,5 +1,6 @@
 tls
 gemcurses
+log_gemcurses.txt
 *.o
 known_hosts
 key.pem

@@ -9,6 +9,7 @@
 #include <netdb.h>
 
 #include "tls.h"
+#include "util.h"
 
 #define GEMINI_SCHEME "gemini://"
 #define DEFAULT_HOST_PORT "1965"
@@ -49,11 +50,9 @@ static void init_openssl_library(void) {
 static int ssl_session_callback(SSL *ssl, SSL_SESSION *session) {
 
   struct gemini_tls *gem_tls;
-
-  if((gem_tls = (struct gemini_tls*)SSL_get_ex_data(ssl, 0)) == NULL) {
-    fprintf(stderr, "ERROR: Can't get ex data");
-    exit(EXIT_FAILURE);
-  }
+  
+  if((gem_tls = (struct gemini_tls*)SSL_get_ex_data(ssl, 0)) == NULL)
+    ERROR_LOG_AND_EXIT("Can't get ex data");
   
   struct session_reuse *sess_p = gem_tls->session;
   
@@ -158,7 +157,7 @@ int parse_url(const char **error_message, char *hostname, char **host_resource, 
     }
 
     if(i <= 1){
-      *error_message = "ERROR: Invalid port number\n";
+      *error_message = "Invalid port number\n";
       return 0;
     }
 
@@ -200,10 +199,10 @@ static int tls_hex_string(const unsigned char *in, size_t inlen, char **out,
     *outlen = 0;
 
   if(inlen >= SIZE_MAX)
-    return -1;
+    return 0;
   
   if((*out = (char *)malloc((inlen + 1) * 2)) == NULL)
-    return -1;
+    return 0;
 
   p = *out;
   len = 0;
@@ -219,7 +218,7 @@ static int tls_hex_string(const unsigned char *in, size_t inlen, char **out,
   if (outlen != NULL)
     *outlen = len;
 
-  return 0;
+  return 1;
 }
 
 static int tls_get_peer_fingerprint(X509 *cert, char **hash) {
@@ -229,61 +228,51 @@ static int tls_get_peer_fingerprint(X509 *cert, char **hash) {
 
   *hash = NULL;
   if (cert == NULL)
-    return -1;
+    return 0;
 
   if (X509_digest(cert, EVP_sha256(), d, &dlen) != 1) {
-    fprintf(stderr, "ERROR: Can't get cert digest\n");
+    fprintf(stderr, "Can't get cert digest\n");
     goto err;
   }
 
-  if (tls_hex_string(d, dlen, &dhex, NULL) != 0) {
-    fprintf(stderr, "ERROR: Can't get tls hex string\n");
+  if (!tls_hex_string(d, dlen, &dhex, NULL)) {
+    fprintf(stderr, "Can't get tls hex string\n");
     goto err;
   }
 
   *hash = dhex;
 
-  return 0;
+  return 1;
 
 err:
   if(dhex != NULL)
     free(dhex);
 
-  return -1;
+  return 0;
 }
 
-static int tls_create_cert() {
+static void tls_create_cert() {
   
   EVP_PKEY_CTX *ctx;
   EVP_PKEY *pkey = NULL;
   
   ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
   
-  if(!ctx){ 
-    fprintf(stderr, "ERROR: Can't create EVP context\n");
-    return -1;
-  }
+  if(!ctx)
+    ERROR_LOG_AND_ABORT("Can't create EVP context\n");
      
-  if(EVP_PKEY_keygen_init(ctx) <= 0) {
-    fprintf(stderr, "ERROR: Can't init EVP\n");
-    return -1;
-  }       
+  if(EVP_PKEY_keygen_init(ctx) <= 0)
+    ERROR_LOG_AND_ABORT("Can't init EVP\n");
 
-  if(EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0) {
-    fprintf(stderr, "ERROR: Can't set RSA bits\n");
-    return -1;
-  }
+  if(EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0)
+    ERROR_LOG_AND_ABORT("Can't set RSA bits\n");
 
-  if(EVP_PKEY_keygen(ctx, &pkey) <= 0){
-    fprintf(stderr, "ERROR: Can't generate RSA key\n");
-    return -1;
-  }
+  if(EVP_PKEY_keygen(ctx, &pkey) <= 0)
+    ERROR_LOG_AND_ABORT("Can't generate RSA key\n");
 
   X509 *x509 = X509_new();
-  if(!x509) {
-    fprintf(stderr, "ERROR: Can't create x509 structure\n");
-    return -1;
-  }
+  if(!x509)
+    ERROR_LOG_AND_ABORT("Can't create x509 structure\n");
 
   ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
   X509_gmtime_adj(X509_get_notBefore(x509), 0);
@@ -300,40 +289,29 @@ static int tls_create_cert() {
                                  (unsigned char *)"localhost", -1, -1, 0);
 
   X509_set_issuer_name(x509, name);
-  if(!X509_sign(x509, pkey, EVP_sha256())) {
-    fprintf(stderr, "ERROR: Can't sign certificate\n");
-    return -1;
-  }
+  if(!X509_sign(x509, pkey, EVP_sha256()))
+    ERROR_LOG_AND_ABORT("Can't sign certificate\n");
 
   FILE *f = fopen(KEY_FILENAME, "wb");
-  if(!f) {
-    fprintf(stderr, "ERROR: Can't open private key file for writing\n");
-    return -1;
-  }
+  if(!f)
+    ERROR_LOG_AND_ABORT("Can't open private key file for writing\n");
  
   int ret = PEM_write_PrivateKey(f, pkey, NULL, NULL, 0, NULL, NULL);
   fclose(f);
 
-  if(!ret) {
-    fprintf(stderr, "ERROR: Can't write private key to file\n");
-    return -1;
-  }
+  if(!ret)
+    ERROR_LOG_AND_ABORT("Can't write private key to file\n");
 
   f = fopen(CERT_FILENAME, "wb");
-  if(!f) {
-    fprintf(stderr, "ERROR: Can't open cert file for writing\n");
-    return -1;
-  }
+  if(!f) 
+    ERROR_LOG_AND_ABORT("Can't open cert file for writing\n");
 
   ret = PEM_write_X509(f, x509);
   fclose(f);
   
-  if(!ret) {
-    fprintf(stderr, "ERROR: Can't write cert to file\n");
-    return -1;
-  }
+  if(!ret) 
+    ERROR_LOG_AND_ABORT("Can't write cert to file\n");
 
-  return 0;
 }
 
 struct gemini_tls* init_tls(int flag) {
@@ -342,7 +320,7 @@ struct gemini_tls* init_tls(int flag) {
   int res;
 
   if(!gem_tls)
-    return NULL;
+    MALLOC_ERROR;
 
   gem_tls->session_indx = 0;
   gem_tls->session = NULL;
@@ -353,33 +331,23 @@ struct gemini_tls* init_tls(int flag) {
   init_openssl_library();
   
   const SSL_METHOD* method = TLS_client_method();
-  if(method == NULL) {
-    fprintf(stderr, "ERROR: Can't set SSL method\n");
-    goto cleanup;
-  }
+  if(method == NULL) 
+    ERROR_LOG_AND_ABORT("Can't set SSL method\n");
 
   gem_tls->ctx = SSL_CTX_new(method);
-  if(gem_tls->ctx == NULL) {
-    fprintf(stderr, "ERROR: Can't create new context\n");
-    goto cleanup;
-  }
+  if(gem_tls->ctx == NULL) 
+    ERROR_LOG_AND_ABORT("Can't create new context\n");
 
 
   // https://stackoverflow.com/questions/256405/programmatically-create-x509-certificate-using-openssl/15082282#15082282
-  if(access(CERT_FILENAME, F_OK ) != 0 || access(KEY_FILENAME, F_OK) != 0) {
-    if(tls_create_cert() != 0) {
-      goto cleanup;
-    }
-  }
+  if(access(CERT_FILENAME, F_OK ) != 0 || access(KEY_FILENAME, F_OK) != 0)
+    tls_create_cert();
 
-  if(SSL_CTX_use_certificate_file(gem_tls->ctx, CERT_FILENAME, SSL_FILETYPE_PEM) != 1) {
-    fprintf(stderr, "ERROR: Can't load client cert\n");
-    goto cleanup;
-  }
-  if(SSL_CTX_use_PrivateKey_file(gem_tls->ctx, KEY_FILENAME, SSL_FILETYPE_PEM) != 1) {
-    fprintf(stderr, "ERROR: Can't load client private key\n");
-    goto cleanup;  
-  }
+  if(SSL_CTX_use_certificate_file(gem_tls->ctx, CERT_FILENAME, SSL_FILETYPE_PEM) != 1)
+    ERROR_LOG_AND_EXIT("Can't load client cert, check if it's valid\n");
+
+  if(SSL_CTX_use_PrivateKey_file(gem_tls->ctx, KEY_FILENAME, SSL_FILETYPE_PEM) != 1) 
+    ERROR_LOG_AND_EXIT("Can't load client private key, check if it's valid\n");
 
   SSL_CTX_sess_set_new_cb(gem_tls->ctx, ssl_session_callback);
   SSL_CTX_set_session_cache_mode(gem_tls->ctx, SSL_SESS_CACHE_CLIENT);
@@ -393,49 +361,30 @@ struct gemini_tls* init_tls(int flag) {
   SSL_CTX_set_options(gem_tls->ctx, flags);
 
   gem_tls->bio_web = BIO_new_ssl_connect(gem_tls->ctx);
-  if(gem_tls->bio_web == NULL) {
-    fprintf(stderr, "ERROR: Can't create bio new ssl connect\n");
-    goto cleanup;
-  }
+  if(gem_tls->bio_web == NULL)
+    ERROR_LOG_AND_ABORT("Can't create bio new ssl connect\n");
   
   gem_tls->bio_out = BIO_new_fp(stdout, BIO_NOCLOSE);
-  if(gem_tls->bio_out == NULL) {
-    fprintf(stderr, "ERROR: Can't create new fp\n");
-    goto cleanup;
-  }
+  if(gem_tls->bio_out == NULL)
+    ERROR_LOG_AND_ABORT("Can't create new fp\n");
  
   gem_tls->bio_mem = BIO_new(BIO_s_mem());
-  if(gem_tls->bio_mem == NULL) {
-    fprintf(stderr, "ERROR: Can't create new fp\n");
-    goto cleanup;
-  }
+  if(gem_tls->bio_mem == NULL)
+    ERROR_LOG_AND_ABORT("Can't create new fp\n");
 
   BIO_get_ssl(gem_tls->bio_web, &gem_tls->ssl);
-  if(gem_tls->ssl == NULL)  {
-    fprintf(stderr, "ERROR: Can't get ssl\n");
-    goto cleanup;
-  }
+  if(gem_tls->ssl == NULL)
+    ERROR_LOG_AND_ABORT("Can't get ssl\n");
   
   const char* const PREFERRED_CIPHERS = "HIGH:!aNULL:!kRSA:!PSK:!SRP:!MD5:!RC4";
   res = SSL_set_cipher_list(gem_tls->ssl, PREFERRED_CIPHERS);
-  if(res == 0) {
-    fprintf(stderr, "ERROR: Can't set cipher list\n");
-    goto cleanup;
-  }
+  if(res == 0)
+    ERROR_LOG_AND_ABORT("Can't set cipher list\n");
 
   // use ex data in callbacks 
   SSL_set_ex_data(gem_tls->ssl, 0, gem_tls);
 
   return gem_tls;
-
-cleanup:
-  free(gem_tls);
-  return NULL;
-}
-
-inline static void alloc_error() {
-  fprintf(stderr, "ERROR: Can't allocate memory\n");
-  exit(EXIT_FAILURE);
 }
 
 const char *tls_get_error(SSL *ssl, int res) {
@@ -466,9 +415,10 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   char *hostname = strdup(h);
   char *host_resource = NULL, *hash = NULL;
   char hostname_with_portn[1024], host_port[6] = {0};
-
+  X509* cert = NULL;
+  
   if(hostname == NULL)
-    alloc_error();
+    MALLOC_ERROR;
   
   if(!parse_url(&resp->error_message, hostname, &host_resource, host_port))
     goto error;
@@ -492,7 +442,7 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   tv.tv_sec = 2;
 
   if((res = getaddrinfo(hostname, host_port, &hints, &result)) != 0) {
-    resp->error_message = "ERROR: Cant get address info\n";
+    resp->error_message = "Cant get address info\n";
 //    fprintf(stderr, "Cant set conn hostname: %s\n", gai_strerror(res));
     goto error;
   }
@@ -517,13 +467,13 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   freeaddrinfo(result);
 
   if(fd == -1) {
-    resp->error_message = "ERROR: Can't connect\n";
+    resp->error_message = "Can't connect\n";
     goto error;
   }
 
   res = SSL_set_tlsext_host_name(gem_tls->ssl, hostname);
   if(res == 0) {
-    resp->error_message = "ERROR: Can't set hostname\n";
+    resp->error_message = "Can't set hostname\n";
     goto error;
   }
 
@@ -550,19 +500,20 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
       tls_remove_session(gem_tls, session);
   }
 
-  X509* cert = SSL_get_peer_certificate(gem_tls->ssl);
+  cert = SSL_get_peer_certificate(gem_tls->ssl);
   if(cert == NULL) {
-    resp->error_message = "ERROR: Can't get peer cert\n";
+    resp->error_message = "Can't get peer cert\n";
     goto error;
   }
    
-  tls_get_peer_fingerprint(cert, &hash);
+  if(!tls_get_peer_fingerprint(cert, &hash)) {
+    resp->error_message = "Can't get peer fingerprint\n";
+    goto error; 
+  }
+
   // there may be different certs on different ports and subdomains
   resp->cert_result = tofu_check_cert(&gem_tls->host, hostname_with_portn, hash); 
   // printf("CERT: %s", hash);
-  if(cert) { 
-    X509_free(cert); 
-  }
 
   char url[1024];
   int url_len = snprintf(url, sizeof(url), (GEMINI_SCHEME "%s%s" CLRN), hostname, host_resource);
@@ -588,7 +539,9 @@ cleanup:
     free(host_resource);
   if(hash != NULL)
     free(hash);
- 
+  if(cert != NULL)
+    X509_free(cert); 
+  
   return return_val;
 }
 
@@ -615,21 +568,12 @@ int tls_read(struct gemini_tls *gem_tls, struct response *resp) {
   } while (len > 0 || BIO_should_retry(gem_tls->bio_web));
 
   BUF_MEM *bptr = NULL;
-  if(BIO_get_mem_ptr(gem_tls->bio_mem, &bptr) > 0) {
-    if(bptr != NULL) {
-      if(bptr->length <= 0 || bptr->data == NULL)
-        return 0;
-    }
-    else return 0;
-  }
-  else
+  if(BIO_get_mem_ptr(gem_tls->bio_mem, &bptr) < 0 || bptr == NULL || bptr->length <= 0 || bptr->data == NULL)
     return 0;
 
   char *res = malloc(bptr->length + 1);
-  if(res == NULL) {
-    fprintf(stderr, "Cant malloc");
-    exit(EXIT_FAILURE);
-  }
+  if(res == NULL)
+    MALLOC_ERROR;
 
   memcpy(res, bptr->data, bptr->length);
   // ensure that we have null byte at the end, or some terrible things may happen
@@ -644,15 +588,14 @@ int tls_read(struct gemini_tls *gem_tls, struct response *resp) {
 struct response *tls_request(struct gemini_tls *gem_tls, const char *h) {
     
   struct response *resp = calloc(1, sizeof(struct response));
-  if(resp == NULL) {
-    exit(EXIT_FAILURE);
-    //return NULL;
-  }
+  if(resp == NULL)
+    MALLOC_ERROR;  
+
   if(!tls_connect(gem_tls, h, resp)) {
     tls_reset(gem_tls);
     return resp;
   }
-
+  // TODO!!! check
   tls_read(gem_tls, resp);
   tls_reset(gem_tls);
 
@@ -743,7 +686,7 @@ void tls_free(struct gemini_tls *gem_tls) {
 //      flag |= TLS_DEBUGGING;
 //    
 //    else
-//      fprintf(stderr, "ERROR: invalid flag, continuing...\n");
+//      fprintf(stderr, "invalid flag, continuing...\n");
 //  }
 //
 //  struct gemini_tls *gem_tls = init_tls(flag);
@@ -752,7 +695,7 @@ void tls_free(struct gemini_tls *gem_tls) {
 //
 //  for(int i = 2; i < argc; i++) {
 //    tls_connect(gem_tls, argv[i], resp); 
-//      int tmp = tls_read(gem_tls, resp);
+////      int tmp = tls_read(gem_tls, resp);
 //      printf("%s\n\n\n", resp->body);
 //      if(resp->error_message)
 //        printf("%s", resp->error_message);

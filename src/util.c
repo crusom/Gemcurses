@@ -24,6 +24,11 @@ char percentage_encode_chars[][4] = {
   " ", "%20",
 };
 
+void get_datatime(char buf[], int size) {
+  time_t now = time(0);
+  struct tm tstruct = *localtime(&now);
+  strftime(buf, size, "%Y-%m-%d %X", &tstruct);
+}
 
 int get_valid_query(char **query) {
   
@@ -96,10 +101,8 @@ enum mime_error get_mime_type(char *str, char **mime_ret) {
     return MIME_ERROR_TOO_LONG;
 
   char *res = malloc(len + 1);
-  if(res == NULL) {
-    fprintf(stderr, "ERROR: cant allocate memory\n");
-    exit(EXIT_FAILURE);
-  }
+  if(res == NULL)
+    MALLOC_ERROR;
 
   strncpy(res, p, len);
   res[len] = '\0';
@@ -159,11 +162,11 @@ int get_default_app(char *mime_type, char default_app[NAME_MAX + 1]) {
       goto err;
 
     fseek(f, 0L, SEEK_END);
-    int file_size = ftell(f);
+    int path_length = ftell(f);
     fseek(f, 0L, SEEK_SET);
 
     // something terrible happened
-    if(file_size > NAME_MAX)
+    if(path_length > NAME_MAX)
       goto err;
 
     if(fgets(buf, NAME_MAX, (FILE *)f) == NULL)
@@ -204,8 +207,11 @@ err:
 char *get_cache_path(char cache_path[PATH_MAX + 1]) {
   char *home = getenv("HOME");
   // no home? :/
-  if(home == NULL)
-    return NULL;
+  // ok let's try old good /tmp
+  if(home == NULL) {
+    INFO_LOG("No $HOME environment variable, using /tmp instead");
+    home = "/tmp";
+  }
 
   strcpy(cache_path, home);
   // add a new cache dir if it doesn't exist yes
@@ -242,24 +248,24 @@ int get_downloads_path(char downloads_dir[]) {
     // Open cache file to read output
     f = fopen(cache_path, "r");
     if(f == NULL)
-      goto err;
+      ERROR_LOG_AND_EXIT("Can't open %s for reading\n", cache_path);
 
     fseek(f, 0L, SEEK_END);
-    int file_size = ftell(f);
+    int path_length = ftell(f);
     fseek(f, 0L, SEEK_SET);
 
     // something terrible happened
-    if(file_size > PATH_MAX + 1 || file_size < 2)
+    if(path_length > PATH_MAX + 1 || path_length < 2) {
+      INFO_LOG("Download path too long");
       goto err;
+    }
 
-    if(fgets(buf, PATH_MAX + 1, (FILE *)f) == NULL)
+    if(fgets(buf, PATH_MAX + 1, (FILE *)f) == NULL) {
+      INFO_LOG("Can't read download path");
       goto err;
+    }
   
-    buf[file_size - 1] = '\0';
-
-    int len = strlen(buf);
-    if(len == 0)
-      goto err;
+    buf[path_length - 1] = '\0';
 
     strcpy(downloads_dir, buf);
     strcat(downloads_dir, "/");
@@ -275,10 +281,8 @@ err:
 
 void write_file(char *buf, char *save_path, int size, int offset) {
   FILE *f = fopen(save_path, "wb");
-  if(f == NULL) {
-    fprintf(stderr, "ERROR: cant open save_path\n");
-    exit(EXIT_FAILURE);
-  }
+  if(f == NULL) 
+    ERROR_LOG_AND_EXIT("ERROR: cant open save_path\n");
   
   fwrite(buf + offset, sizeof(char), size - offset, f);
   fclose(f);
@@ -296,11 +300,13 @@ void exec_app(char *app, char *path) {
 
 int save_file(char save_path[PATH_MAX + 1], char *buf, char *filename, int size, int offset) {
   char *env = getenv("GEMCURSES_SAVE_PATH");  
-  if(env == NULL)
-    get_downloads_path(save_path);
+  if(env == NULL) {
+    if(!get_downloads_path(save_path))
+      return 0;
+  }
   else
     strcpy(save_path, env);
-
+  
   strcat(save_path, filename);  
   write_file(buf, save_path, size, offset);
 
@@ -340,7 +346,7 @@ int save_gemsite(char save_path[PATH_MAX + 1], char *url, struct response *resp)
     mkdir(save_path, 0700);
 
   char *dir = strchr(url, '/');
-  if(!dir) return 0;
+  assert(dir);
 
   int count_dots = 0;
   for(int i = 0; i < dir - url; i++) {
@@ -388,7 +394,8 @@ int save_gemsite(char save_path[PATH_MAX + 1], char *url, struct response *resp)
   
   strcat(save_path, timestamp);
 
-//  printf("%s", save_path);
   write_file(resp->body, save_path, resp->body_size, 0);
+  INFO_LOG("saved gemsite: %s", save_path);
+
   return 1;
 }

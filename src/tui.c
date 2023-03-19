@@ -35,7 +35,7 @@ int main_win_x, main_win_y;
 
 int dialog_win_x, dialog_win_y;
 int dialog_subwin_x, dialog_subwin_y;
-const char *info_message;
+char info_message[1000];
 char *dialog_message = NULL;
 
 char **bookmarks_links = NULL;
@@ -266,8 +266,8 @@ static void draw_borders() {
 static void draw_scrollbar(WINDOW *win, struct page_t *page, int page_y, int page_x) {
   if(page->lines_num <= 0) return;
 
-  float y;
-  float scrollbar_height = (float)((page_y) * (page_y)) / (float)page->lines_num;
+  double y;
+  double scrollbar_height = (double)((page_y) * (page_y)) / (double)page->lines_num;
   if(scrollbar_height < 1.0)
     scrollbar_height = 1.0;
 
@@ -275,10 +275,13 @@ static void draw_scrollbar(WINDOW *win, struct page_t *page, int page_y, int pag
     y = 0;
   } 
   else if(page->last_line_index == page->lines_num) {
-    y = (float)(page_y + 1 - scrollbar_height);
+    if(scrollbar_height != 1.0)
+      y = (double)(page_y + 1 - scrollbar_height);
+    else
+      y = (double)(page_y - scrollbar_height);
   }
   else {
-    y = (float)(page->first_line_index + 1) / (float)page->lines_num;
+    y = (double)(page->first_line_index + 1) / (double)page->lines_num;
     y = page_y * y;
     y = (int)(y + 0.5);
   }
@@ -603,16 +606,19 @@ static void print_is_bookmarked(bool is_bookmarked) {
     wprintw(isbookmarked_win, "%s", "☆");
 }
 
-static void info_bar_print(const char *str) {
-  // const strings have static duration so its valid
-  info_message = str;
+static void info_bar_print(const char *format, ...) {
+  va_list argptr;
+  va_start(argptr, format);
+  vsnprintf(info_message, sizeof(info_message), format, argptr);
+  va_end(argptr);
+
   werase(info_bar_win);
   wprintw(info_bar_win, "%s", info_message);
   wrefresh(info_bar_win);
 }
 
 static void info_bar_clear(void) {
-  info_message = "";
+  info_message[0] = 0;
   werase(info_bar_win);
 }
 
@@ -766,7 +772,7 @@ static void resize_screen(struct page_t *page, struct response *resp) {
   wresize(info_bar_win, 1, max_x - 6);
   mvwin(info_bar_win, max_y - 1, 0);
   wclear(info_bar_win);
-  if(info_message)
+  if(info_message[0])
     wprintw(info_bar_win, "%s", info_message);
 
   // mode win
@@ -1447,27 +1453,22 @@ input_loop:
               new_resp->body_size, 
               header_offset
            ))
-            info_bar_print("Opened a file");
-//            else
-//              info_bar_print(strerror(errno));
+            info_bar_print("Opened the file");
+          else
+            info_bar_print(strerror(errno));
         }
         else if(selected_opt == 's') {
           char save_path[PATH_MAX + 1];
-          save_file(
-              save_path, 
-              new_resp->body, 
-              filename, 
-              new_resp->body_size, 
-              header_offset
-           );
-
-          info_message = "";
-          werase(info_bar_win);
-          wprintw(info_bar_win, "Successfully saved to: %s", save_path);
-        }
-        else {
-          info_message = "";
-          werase(info_bar_win);
+          if(!save_file(
+                save_path, 
+                new_resp->body, 
+                filename, 
+                new_resp->body_size, 
+                header_offset
+           ))
+            info_bar_print("Can't save the file");
+          else
+            info_bar_print("Successfully saved to: %s", save_path);
         }
       }
       else {
@@ -1476,17 +1477,18 @@ input_loop:
         selected_opt = dialog_ask(page, *resp, yes_no_options);
         if(selected_opt == 'y') {
           char save_path[PATH_MAX + 1];
-          save_file(
-              save_path, 
-              new_resp->body, 
-              filename, 
-              new_resp->body_size, 
-              header_offset
-           );
-
-          info_message = "";
-          werase(info_bar_win);
-          wprintw(info_bar_win, "Successfully saved to: %s", save_path);
+          if(!save_file(
+                save_path, 
+                new_resp->body, 
+                filename, 
+                new_resp->body_size, 
+                header_offset
+           )) {
+            info_bar_print("Can't save the file");
+          }
+          else {
+            info_bar_print("Successfully saved to: %s", save_path);
+          }
         }
         else
           info_bar_print("File not saved");
@@ -1711,6 +1713,7 @@ int main() {
   setlocale(LC_CTYPE, "en_US.utf8");
   // when server closes a pipe
   signal(SIGPIPE, SIG_IGN);
+  freopen("log_gemcurses.txt", "a", stderr);
   init_windows();
   init_search_form(false);
   draw_borders();
@@ -2065,11 +2068,9 @@ int main() {
           char selected_opt = dialog_ask(gem_page, resp, yes_no_options);
           char save_path[PATH_MAX + 1];
           if(selected_opt == 'y') 
-            if(save_gemsite(save_path, gem_page->url, resp)) {
-              info_message = "";
-              werase(info_bar_win);
-              wprintw(info_bar_win, "Successfully saved to: %s", save_path);
-            }
+            if(save_gemsite(save_path, gem_page->url, resp))
+              info_bar_print("Successfully saved to: %s", save_path);
+
           hide_dialog(INFO);
           break;
 
@@ -2158,7 +2159,32 @@ int main() {
         // https://en.wikipedia.org/wiki/Control_character#How_control_characters_map_to_keyboards
         // ctrl + w
         case 'W' - 64:
-          form_driver(search_form, REQ_DEL_LINE);
+          form_driver(search_form, REQ_VALIDATION);
+
+          char *search_str = field_buffer(search_field[1], 0);
+          if(!search_str || !*search_str) break;
+          
+          char search_buf[1024];
+          strncpy(search_buf, search_str, sizeof(search_buf));
+          trim_whitespaces(search_buf);
+
+          char *slash = NULL;
+loop:
+          if((slash = strrchr(search_buf, '/')) != NULL) {
+            if(search_buf[strlen(search_buf) - 1] == '/') {
+              *slash = '\0';
+              goto loop;
+            }
+            else
+              slash[1] = '\0';
+          }
+          else
+            search_buf[0] = '\0';
+           
+          set_field_buffer(search_field[1], 0, search_buf);
+
+          form_driver(search_form, REQ_PREV_FIELD);
+          form_driver(search_form, REQ_END_LINE);
           break;
 
 
