@@ -1450,8 +1450,8 @@ input_loop:
 //        INFO_LOG("mime_type %s\n", mime_type);
         char *charset;
         if((charset = strstr(mime_type, "charset=")) != NULL && 
-            strncmp(charset + 8, "utf-8", 5) != 0 && 
-            strncmp(charset + 8, "utf8", 4) != 0) {}
+            strncasecmp(charset + 8, "utf-8", 5) != 0 && 
+            strncasecmp(charset + 8, "utf8", 4) != 0) {}
         else {
           break;
         }
