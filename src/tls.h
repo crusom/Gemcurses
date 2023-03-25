@@ -33,6 +33,7 @@ enum response_status_codes {
 
 struct response {
   char *body;
+  char *meta;
   const char *error_message;
   size_t body_size;
   enum tofu_check_results cert_result;
@@ -43,11 +44,18 @@ struct response {
 
 typedef struct gemini_tls *Gemini_tls;
 
+// getters
+struct known_host *gem_tls_get_known_hosts(struct gemini_tls *gem_tls);
+char *gem_tls_get_cur_hostname(struct gemini_tls *gem_tls);
+
 Gemini_tls init_tls(int flag);
-struct response *tls_request(Gemini_tls gem_tls, const char *h);
-int tls_connect(Gemini_tls gem_tls, const char *h, struct response *resp);
+void check_response(struct response *resp);
+int tls_connect(Gemini_tls gem_tls, const char *h, struct response *resp, char fingerprint[]);
 int tls_read(Gemini_tls gem_tls, struct response *resp);
 void tls_reset(Gemini_tls gem_tls);
 void tls_free(struct gemini_tls *gem_tls);
+
+// helper
+int parse_url(const char **error_message, char *hostname, char **host_resource, char port[6]);
 
 #endif

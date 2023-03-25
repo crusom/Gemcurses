@@ -7,11 +7,13 @@
 #include <dirent.h>
 #include <wctype.h>
 #include <errno.h>
+
 #include "tls.h"
 #include "page.h"
 #include "bookmarks.h"
 #include "util.h"
 #include "utf8.h"
+
 #define SAVED_DIR "saved/"
 #define MAIN_GEM_SITE "warmedal.se/~antenna/"
 #define set_main_win_x(max_x) main_win_x = max_x - offset_x - 1
@@ -85,6 +87,15 @@ char offline_path[PATH_MAX + 1] = {0};
 //  } url_history;
 //};
 
+//struct history_list_t {
+//  struct {
+//    struct page_t page;
+//    char *body;
+//  } *current_page, *next_page, *prev_page;
+//} history_list;
+
+struct history_list_t *history_list;
+
 static void refresh_windows() {
   if(wnoutrefresh(info_bar_win)     == ERR) goto err;
   if(wnoutrefresh(mode_win)         == ERR) goto err;
@@ -96,7 +107,7 @@ static void refresh_windows() {
   return;
 
 err: 
-  fprintf(stderr, "%s", "Cant refresh window\n");
+  fprintf(stderr, "%s", "Can't refresh window\n");
   exit(EXIT_FAILURE);
 }
 
@@ -249,6 +260,8 @@ static void free_resp(struct response *resp) {
   if(resp != NULL) {
     if(resp->body)
       free(resp->body);
+    if(resp->meta)
+      free(resp->meta);
     free(resp);
   }
   resp = NULL;
@@ -622,21 +635,6 @@ static void info_bar_clear(void) {
   werase(info_bar_win);
 }
 
-static void print_mime_error(enum mime_error mime_err) {
-  switch(mime_err){
-    case MIME_ERROR_NOT_UTF8:
-      info_bar_print("Mime is not utf8"); break;
-    case MIME_ERROR_TOO_LONG:
-      info_bar_print("Mime exceeds 1024 bytes"); break;
-    case MIME_ERROR_MORE_THAN_ONE_SPACE:
-      info_bar_print("More than one space after status"); break;
-    case MIME_ERROR_NO_SPACE_AFTER_STATUS:
-      info_bar_print("Invalid character after status"); break;
-    default:
-      assert(0);
-  };
-}
-
 static void printline(WINDOW *win, struct screen_line *line, int x, int y) {
   // scrollok scrolls automatically to the next line when 
   // len == max_x so disable it temporarily
@@ -816,6 +814,7 @@ static void resize_screen(struct page_t *page, struct response *resp) {
   // if there was a response, then print it
   if(page->lines != NULL)
     free_lines(page);
+
   if(!is_offline) { 
     if(resp && resp->body) {
       int paragraphs_num = 0;
@@ -878,6 +877,7 @@ static void resize_screen(struct page_t *page, struct response *resp) {
       mvwprintw(dialog_title_win, 0, dialog_subwin_x / 2 - 4, "%s", "Bookmarks");
       if(bookmarks.lines)
         print_page(&bookmarks, dialog_subwin, 0, dialog_subwin_y, &print_bookmark_line);
+      draw_scrollbar(dialog_subwin, &bookmarks, dialog_subwin_y, dialog_win_x - 2 - offset_x);
       break;
     case INFO:
       mvwprintw(dialog_title_win, 0, dialog_subwin_x / 2 - 2, "%s", "Info");
@@ -888,10 +888,10 @@ static void resize_screen(struct page_t *page, struct response *resp) {
       mvwprintw(dialog_title_win, 0, dialog_subwin_x / 2 - 3, "%s", "Offline");
       if(offline.lines)
         print_page(&offline, dialog_subwin, 0, dialog_subwin_y, NULL);
+      draw_scrollbar(dialog_subwin, &offline, dialog_subwin_y, dialog_win_x - 2 - offset_x);
       break;
   }
   
-  draw_scrollbar(dialog_subwin, &bookmarks, dialog_subwin_y, dialog_win_x - 2 - offset_x);
   update_panels();
   doupdate();
 }
@@ -1089,6 +1089,7 @@ static void hide_dialog() {
   doupdate();
   touchwin(main_win);
   is_dialog_hidden = true;
+  current_focus = MAIN_WINDOW;
 }
 
 static void print_to_dialog(const char *format, ...) {
@@ -1252,6 +1253,7 @@ static char** load_dirs(char *relative_path, int *n_dirs_arg) {
   
   char path[PATH_MAX + 1];
   char *pwd = getenv("PWD");
+
   strcpy(path, pwd);
   strcat(path, "/");
   strcat(path, SAVED_DIR);
@@ -1306,18 +1308,54 @@ func_start:
   info_bar_print("Connecting..."); 
   refresh_windows();          
 
-  struct response *new_resp = tls_request(gem_tls, gemini_url);
-  if(new_resp == NULL) return 0;
+  struct response *new_resp = calloc(1, sizeof(struct response));
+  if(new_resp == NULL)
+    MALLOC_ERROR;
+  
+  char fingerprint[100];  
+  *fingerprint = '\0';
+
+  int conn_ret = tls_connect(gem_tls, gemini_url, new_resp, fingerprint);
+  if(conn_ret == 0) {
+    tls_reset(gem_tls);
+    info_bar_print(new_resp->error_message);
+    goto err;
+  }
+
+  if(new_resp->cert_result == TOFU_FINGERPRINT_MISMATCH) {
+    show_dialog(INFO);
+    print_to_dialog("Fingerprint mistmatch! Do you want to trust it anyway? [y/n]");    
+    int selected_opt = dialog_ask(page, *resp, yes_no_options);
+    hide_dialog();
+  
+    if(selected_opt == 'n') {
+      tls_reset(gem_tls);
+      // info_bar_print("Didn't established connection, because of mistmatched fingerprint.");
+      info_bar_print("Fingerprint mistmatch!");
+      goto err;
+    }
+    else {
+      assert(*fingerprint);
+      tofu_change_cert(gem_tls_get_known_hosts(gem_tls), gem_tls_get_cur_hostname(gem_tls), fingerprint);
+      new_resp->cert_result = TOFU_OK;
+    }
+  }
+
+  tls_read(gem_tls, new_resp);
+  tls_reset(gem_tls);
 
   if(new_resp->error_message != NULL) {
     info_bar_print(new_resp->error_message);
     goto err;
   }
+  check_response(new_resp);
+  if(new_resp->error_message != NULL) {
+    info_bar_print(new_resp->error_message);
+    goto err;
+  }
+  
+
   assert(new_resp->body);
-//  if(new_resp->body == NULL || new_resp->body[0] == '\0' || new_resp->body_size < 5) {
-//    info_bar_print("Can't connect to the host");
-//    goto err;
-//  }
 
   switch(new_resp->status_code) {
     case CODE_SENSITIVE_INPUT:
@@ -1325,11 +1363,8 @@ func_start:
       // fall through
     case CODE_INPUT: 
       show_dialog(INFO);
-      
-      new_resp->body[strlen(new_resp->body) - 2] = '\0';
-      char *b_p = new_resp->body;
-      while(*b_p && isdigit(*b_p)) b_p++;
-      print_to_dialog("%s", b_p);
+      assert(new_resp->meta);
+      print_to_dialog("%s", new_resp->meta); 
 
       curs_set(1);
       refresh();
@@ -1407,24 +1442,25 @@ input_loop:
       break;
     
     case CODE_SUCCESS:;
-      char *mime_type = NULL;
-      enum mime_error mime_err = get_mime_type(new_resp->body, &mime_type);
-      if(mime_err != MIME_ERROR_NONE) {
-          print_mime_error(mime_err);
-          goto err;
-      }
+      char *mime_type = new_resp->meta;
     
-      if(strcmp(mime_type, "text/gemini") == 0 || strcmp(mime_type, "text/plain") == 0 ||
+      if(m_strncmp(mime_type, "text/gemini") == 0 || m_strncmp(mime_type, "text/plain") == 0 ||
          m_strncmp(new_resp->body + 3, "\r\n") == 0) {
-        free(mime_type);
-        break;
+        // if there's a specified charset, and it's not utf8, then don't show it, but go and ask for download instead
+//        INFO_LOG("mime_type %s\n", mime_type);
+        char *charset;
+        if((charset = strstr(mime_type, "charset=")) != NULL && 
+            strncmp(charset + 8, "utf-8", 5) != 0 && 
+            strncmp(charset + 8, "utf8", 4) != 0) {}
+        else {
+          break;
+        }
       }
       // if the mime_type is something else than a gempage, then let's save it, with the filename of the requested resource   
   
       char *filename = strrchr(gemini_url, '/');
       if(filename == NULL || strlen(filename) == 1) {
         info_bar_print("Should be a file, not a directory?");
-        free(mime_type);
         goto err;
       }
       else {
@@ -1445,7 +1481,6 @@ input_loop:
         
         selected_opt = dialog_ask(page, *resp, options);
         if(selected_opt == 'o') {
-          // TODO
           if(open_file(
               new_resp->body, 
               filename, 
@@ -1470,6 +1505,8 @@ input_loop:
           else
             info_bar_print("Successfully saved to: %s", save_path);
         }
+        else
+          info_bar_print("Didn't open the file");
       }
       else {
         print_to_dialog("Not known mimetype. Do you want to save %s? [y/n]", filename);
@@ -1495,21 +1532,15 @@ input_loop:
       }
 
       hide_dialog();
-      free(mime_type);
       goto err;
       break;
 
     case CODE_REDIRECT_PERMANENT:
     case CODE_REDIRECT_TEMPORARY:
       werase(info_bar_win);
-      char *redirect_link = new_resp->body; 
-      redirect_link += 3;
-      char *p = redirect_link;
-      while(*p && *p != '\r')
-        p++;
-      *p = '\0';
-      
-      char *new_link = handle_link_click(gemini_url, redirect_link, page, *resp);
+      assert(new_resp->meta);
+ 
+      char *new_link = handle_link_click(gemini_url, new_resp->meta, page, *resp);
       
       if(was_redirected)
         free(gemini_url);
@@ -1557,47 +1588,47 @@ loop:;
       break;
 
     case CODE_TEMPORARY_FAILURE:
-      info_bar_print("Temporary failure!"); 
-      goto err;
+      info_bar_print("40 Temporary failure!"); 
+      goto err_and_show_meta;
     case CODE_SERVER_UNAVAILABLE:
-      info_bar_print("Server unavailable!"); 
-      goto err;
+      info_bar_print("41 Server unavailable!"); 
+      goto err_and_show_meta;
     case CODE_CGI_ERROR:
-      info_bar_print("CGI error!"); 
-      goto err;
+      info_bar_print("42 CGI error!"); 
+      goto err_and_show_meta;
     case CODE_PROXY_ERROR:
-      info_bar_print("Proxy error!"); 
-      goto err;
+      info_bar_print("43 Proxy error!"); 
+      goto err_and_show_meta;
     case CODE_SLOW_DOWN:
-      info_bar_print("Slow down!"); 
-      goto err;
+      info_bar_print("44 Slow down!"); 
+      goto err_and_show_meta;
     case CODE_PERMANENT_FAILURE:
-      info_bar_print("Permanent failure!"); 
-      goto err;
+      info_bar_print("50 Permanent failure!"); 
+      goto err_and_show_meta;
     case CODE_NOT_FOUND:
-      info_bar_print("Gemsite not found!"); 
-      goto err;
+      info_bar_print("51 Gemsite not found!"); 
+      goto err_and_show_meta;
     case CODE_GONE:
-      info_bar_print("Gemsite is gone!"); 
-      goto err;
+      info_bar_print("52 Gemsite is gone!"); 
+      goto err_and_show_meta;
     case CODE_PROXY_REQUEST_REFUSED:
-      info_bar_print("Refused request!"); 
-      goto err;
+      info_bar_print("53 Refused request!"); 
+      goto err_and_show_meta;
     case CODE_BAD_REQUEST:
-      info_bar_print("Bad request!"); 
-      goto err; 
+      info_bar_print("59 Bad request!"); 
+      goto err_and_show_meta;
     case CODE_CLIENT_CERTIFICATE_REQUIRED: 
-      info_bar_print("Client cert required!"); 
-      goto err;
+      info_bar_print("60 Client cert required!"); 
+      goto err_and_show_meta;
     case CODE_CERTIFICATE_NOT_AUTHORISED:
-      info_bar_print("Cert not authorised!"); 
-      goto err;
+      info_bar_print("61 Cert not authorised!"); 
+      goto err_and_show_meta;
     case CODE_CERTIFICATE_NOT_VALID:
-      info_bar_print("Cert not valid!"); 
-      goto err;
+      info_bar_print("62 Cert not valid!"); 
+      goto err_and_show_meta;
     default: 
       info_bar_print("Invalide response code!"); 
-      goto err;
+      goto err_and_show_meta;
   }
 
 
@@ -1630,6 +1661,7 @@ loop:;
       main_win_x, 
       false
   );
+
   free_paragraphs(paragraphs, paragraphs_num);
 
   // print the response
@@ -1669,23 +1701,25 @@ loop:;
         info_bar_print("Valid fingerprint!");
       
       break;
-    case TOFU_FINGERPRINT_MISMATCH:
-      if((*resp)->was_resumpted) 
-        info_bar_print("Fingerprint mistmatch! (session resumpted)");
-      else 
-        info_bar_print("Fingerprint mistmatch!");
-      
-      break;
     case TOFU_NEW_HOSTNAME:
       if((*resp)->was_resumpted) 
         info_bar_print("New hostname! (session resumpted)");
       else 
         info_bar_print("New hostname!");
-      
       break;
+    default:
+      assert(0);
   }
 
   return 1;
+
+err_and_show_meta:
+  if(new_resp->meta) {
+    show_dialog(INFO);
+    print_to_dialog("%s [press anything to continue]", new_resp->meta);    
+    dialog_ask(page, *resp, "");
+    hide_dialog();
+  }
 
 err:
   field_opts_on(search_field[1], O_PUBLIC);
@@ -1706,14 +1740,45 @@ err:
 //  free_paragraphs(dir_paragraphs, n_dirs);
 //  offline.selected_link_index = -1;
 //}
+static inline void print_help(void) {
+    puts("\
+A gemini ncurses client.\n\
+Usage:\n\
+  KEY 	ACTION\n\
+  arrows up/down 	go down or up on the page\n\
+  / 	search\n\
+  q 	change to link-mode/scroll-mode\n\
+  enter 	go to a link\n\
+  B 	go to the defined main gemsite (antenna)\n\
+  P 	show bookmarks dialog\n\
+  S 	save the gemsite\n\
+  C 	show url of the selected link\n\
+  A 	bookmark current gemsite\n\
+  PgUp/PgDn 	go page up or page down\n\
+  mouse scroll 	scroll\n\
+  \n\
+You can find data at $XDG_DATA_HOME or $HOME/.local/share/gemcurses\
+");
+}
 
-int main() {
+int main(int argc, char **argv) {
+  if(argc == 2 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
+    print_help();
+    return EXIT_SUCCESS;
+  }
+
   // set encoding for emojis
   // however some emojis may not work
   setlocale(LC_CTYPE, "en_US.utf8");
   // when server closes a pipe
   signal(SIGPIPE, SIG_IGN);
-  freopen("log_gemcurses.txt", "a", stderr);
+  // redirect stderr to log.txt in data dir
+  {
+    char log_path[PATH_MAX + 1];
+    get_file_path_in_data_dir("log.txt", log_path, sizeof(log_path));
+    freopen(log_path, "a", stderr);
+  }
+
   init_windows();
   init_search_form(false);
   draw_borders();
@@ -1740,7 +1805,7 @@ int main() {
      );
   }
   // TODO
-//  load_offline_dirs();
+// load_offline_dirs();
   // mouse support
   MEVENT event;
   mousemask(BUTTON5_PRESSED | BUTTON4_PRESSED, NULL);
@@ -1818,25 +1883,27 @@ int main() {
             pageup(&offline, main_win, main_win_y, NULL);
           break;
 
-//        case 'R':;
-//          if(!is_offline) {
-//            if(gem_page != NULL && gem_page->url != NULL) {
-//              int res = request_gem_page(
-//                  gem_page->url, 
-//                  gem_tls, 
-//                  gem_page, 
-//                  &resp 
-//              );
-//              if(res) {
-//                curs_set(0);
-//                form_driver(search_form, REQ_CLR_FIELD);
-//                set_field_buffer(search_field[1], 0, gem_page->url);
-//                refresh();
-//              } 
-//              info_bar_print("Refreshed!");
-//            }
-//          }
-//        break;
+        case 'R':;
+          if(!is_offline) {
+            if(gem_page != NULL && gem_page->url != NULL) {
+              char *url = gem_page->url;
+              int res = request_gem_page(
+                  url, 
+                  gem_tls, 
+                  gem_page, 
+                  &resp 
+              );
+              free(url);
+              if(res) {
+                curs_set(0);
+                form_driver(search_form, REQ_CLR_FIELD);
+                set_field_buffer(search_field[1], 0, gem_page->url);
+                refresh();
+              } 
+              info_bar_print("Refreshed!");
+            }
+          }
+        break;
 
         case 'B':;
           if(!is_offline) {
@@ -1878,6 +1945,7 @@ int main() {
 
         case 'P':;
           if(!is_offline) {
+            if(num_bookmarks_links == 0) break;
             if(bookmarks.lines == NULL) {
               if(bookmarks_links == NULL) {
                 info_bar_print("No bookmarks saved!");
@@ -1907,6 +1975,7 @@ int main() {
           }
           break;        
         
+        // jesus christ i'm sorry for this spaghetti code, i'll refactor it someday i swear
         case 'A':;
           if(!gem_page->url) break;
 
@@ -1964,7 +2033,7 @@ int main() {
             );
          
 
-            if(bookmarks.last_line_index > bookmarks.lines_num - 1) {
+            if(bookmarks.lines_num != 0 && bookmarks.last_line_index > bookmarks.lines_num - 1) {
               if(bookmarks.first_line_index > (bookmarks.last_line_index - bookmarks.lines_num - 1))
                 bookmarks.first_line_index -= (bookmarks.last_line_index - (bookmarks.lines_num - 1));
               else
@@ -1985,7 +2054,8 @@ int main() {
               );
             }
                
-            num_bookmarks_links--;    
+            num_bookmarks_links--;
+            
             bookmarks_links = realloc(bookmarks_links, sizeof(char*) * num_bookmarks_links);
             break;
           }
@@ -2067,10 +2137,13 @@ int main() {
           print_to_dialog("%s", "Do you want to save the gemsite? [y/n]");
           char selected_opt = dialog_ask(gem_page, resp, yes_no_options);
           char save_path[PATH_MAX + 1];
-          if(selected_opt == 'y') 
-            if(save_gemsite(save_path, gem_page->url, resp))
+          if(selected_opt == 'y') {
+            if(save_gemsite(save_path, sizeof(save_path), gem_page->url, resp))
               info_bar_print("Successfully saved to: %s", save_path);
-
+            else
+              info_bar_print("Couldn't save the gemsite");
+          }
+  
           hide_dialog(INFO);
           break;
 
@@ -2170,7 +2243,7 @@ int main() {
 
           char *slash = NULL;
 loop:
-          if((slash = strrchr(search_buf, '/')) != NULL) {
+          if(*search_buf && (slash = strrchr(search_buf, '/')) != NULL) {
             if(search_buf[strlen(search_buf) - 1] == '/') {
               *slash = '\0';
               goto loop;
@@ -2180,8 +2253,10 @@ loop:
           }
           else
             search_buf[0] = '\0';
-           
-          set_field_buffer(search_field[1], 0, search_buf);
+          if(!*search_buf)
+            form_driver(search_form, REQ_CLR_FIELD);
+          else
+            set_field_buffer(search_field[1], 0, search_buf);
 
           form_driver(search_form, REQ_PREV_FIELD);
           form_driver(search_form, REQ_END_LINE);

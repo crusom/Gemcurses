@@ -41,6 +41,13 @@ struct gemini_tls {
   char *cur_hostname;
 };
 
+struct known_host *gem_tls_get_known_hosts(struct gemini_tls *gem_tls) {
+  return gem_tls->host;
+}
+
+char *gem_tls_get_cur_hostname(struct gemini_tls *gem_tls) {
+  return gem_tls->cur_hostname;
+}
 
 static void init_openssl_library(void) {
   (void)SSL_library_init();
@@ -48,6 +55,7 @@ static void init_openssl_library(void) {
 }
 
 static int ssl_session_callback(SSL *ssl, SSL_SESSION *session) {
+  if(!session) return 0;
 
   struct gemini_tls *gem_tls;
   
@@ -57,15 +65,18 @@ static int ssl_session_callback(SSL *ssl, SSL_SESSION *session) {
   struct session_reuse *sess_p = gem_tls->session;
   
   while(sess_p) {
-    if(strcmp(gem_tls->cur_hostname, sess_p->hostname) == 0){    
+//    INFO_LOG("sess_p->hostname: %s, gem_tls->cur_hostname: %s, are_equal: %d\n", sess_p->hostname, gem_tls->cur_hostname, strcmp(gem_tls->cur_hostname, sess_p->hostname));
+    if(strcmp(gem_tls->cur_hostname, sess_p->hostname) == 0){
       sess_p->session = session;
       return 0;
     }
     sess_p = sess_p->next;
   }
+
  
   struct session_reuse *tmp_sess;
   tmp_sess = (struct session_reuse*) calloc(1, sizeof(struct session_reuse));
+  INFO_LOG("cur_hostname: %s\n", gem_tls->cur_hostname);
   tmp_sess->hostname = strdup(gem_tls->cur_hostname);  
   tmp_sess->session = session;
   tmp_sess->next = gem_tls->session;
@@ -116,8 +127,10 @@ static SSL_SESSION *tls_get_session(struct gemini_tls *gem_tls, const char *host
 
 static void tls_remove_session(struct gemini_tls *gem_tls, SSL_SESSION *session) {
   struct session_reuse *sess_p = gem_tls->session;
+  struct session_reuse *sess_found = NULL;
 
   if(sess_p->session == session) {
+    sess_found = sess_p;
     if(sess_p->next)
       gem_tls->session = sess_p->next;
     else
@@ -130,6 +143,12 @@ static void tls_remove_session(struct gemini_tls *gem_tls, SSL_SESSION *session)
       break;
     }
     sess_p = sess_p->next;
+  }
+  
+  if(sess_found) {
+    if(sess_found->hostname)
+      free(sess_found->hostname);
+    free(sess_found);
   }
 }
 
@@ -251,7 +270,8 @@ err:
   return 0;
 }
 
-static void tls_create_cert() {
+// https://stackoverflow.com/questions/256405/programmatically-create-x509-certificate-using-openssl/15082282#15082282
+static void tls_create_cert(char *key_path, char *cert_path) {
   
   EVP_PKEY_CTX *ctx;
   EVP_PKEY *pkey = NULL;
@@ -276,6 +296,7 @@ static void tls_create_cert() {
 
   ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
   X509_gmtime_adj(X509_get_notBefore(x509), 0);
+  // quite random value, long enough
   X509_gmtime_adj(X509_get_notAfter(x509), 2137 * 31536000L);
 
   X509_set_pubkey(x509, pkey);
@@ -292,7 +313,7 @@ static void tls_create_cert() {
   if(!X509_sign(x509, pkey, EVP_sha256()))
     ERROR_LOG_AND_ABORT("Can't sign certificate\n");
 
-  FILE *f = fopen(KEY_FILENAME, "wb");
+  FILE *f = fopen(key_path, "wb");
   if(!f)
     ERROR_LOG_AND_ABORT("Can't open private key file for writing\n");
  
@@ -302,7 +323,7 @@ static void tls_create_cert() {
   if(!ret)
     ERROR_LOG_AND_ABORT("Can't write private key to file\n");
 
-  f = fopen(CERT_FILENAME, "wb");
+  f = fopen(cert_path, "wb");
   if(!f) 
     ERROR_LOG_AND_ABORT("Can't open cert file for writing\n");
 
@@ -339,14 +360,17 @@ struct gemini_tls* init_tls(int flag) {
     ERROR_LOG_AND_ABORT("Can't create new context\n");
 
 
-  // https://stackoverflow.com/questions/256405/programmatically-create-x509-certificate-using-openssl/15082282#15082282
-  if(access(CERT_FILENAME, F_OK ) != 0 || access(KEY_FILENAME, F_OK) != 0)
-    tls_create_cert();
+  char key_path[PATH_MAX + 1], cert_path[PATH_MAX + 1];
+  get_file_path_in_data_dir(KEY_FILENAME, key_path, sizeof(key_path));  
+  get_file_path_in_data_dir(CERT_FILENAME, cert_path, sizeof(cert_path));  
 
-  if(SSL_CTX_use_certificate_file(gem_tls->ctx, CERT_FILENAME, SSL_FILETYPE_PEM) != 1)
+  if(access(cert_path, F_OK ) != 0 || access(key_path, F_OK) != 0)
+    tls_create_cert(key_path, cert_path);
+
+  if(SSL_CTX_use_certificate_file(gem_tls->ctx, cert_path, SSL_FILETYPE_PEM) != 1)
     ERROR_LOG_AND_EXIT("Can't load client cert, check if it's valid\n");
 
-  if(SSL_CTX_use_PrivateKey_file(gem_tls->ctx, KEY_FILENAME, SSL_FILETYPE_PEM) != 1) 
+  if(SSL_CTX_use_PrivateKey_file(gem_tls->ctx, key_path, SSL_FILETYPE_PEM) != 1) 
     ERROR_LOG_AND_EXIT("Can't load client private key, check if it's valid\n");
 
   SSL_CTX_sess_set_new_cb(gem_tls->ctx, ssl_session_callback);
@@ -356,7 +380,7 @@ struct gemini_tls* init_tls(int flag) {
     SSL_CTX_set_info_callback(gem_tls->ctx, ssl_info_callback);
   
   SSL_CTX_set_verify_depth(gem_tls->ctx, 4);
-  // disable SSL cause its obolete and dangerous
+  // disable SSL because it's obsolete and dangerous
   const uint64_t flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
   SSL_CTX_set_options(gem_tls->ctx, flags);
 
@@ -407,9 +431,7 @@ const char *tls_get_error(SSL *ssl, int res) {
 }
 
 
-
-
-int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp) {
+int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp, char *fingerprint) {
   long res = 1;
   int return_val = 1;
   char *hostname = strdup(h);
@@ -442,8 +464,8 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   tv.tv_sec = 2;
 
   if((res = getaddrinfo(hostname, host_port, &hints, &result)) != 0) {
-    resp->error_message = "Cant get address info\n";
-//    fprintf(stderr, "Cant set conn hostname: %s\n", gai_strerror(res));
+    resp->error_message = "Can't get address info\n";
+//    fprintf(stderr, "Can't set conn hostname: %s\n", gai_strerror(res));
     goto error;
   }
 
@@ -496,8 +518,9 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   else {
     // FIXME idk if that's sane, OPENSSL api is fucked up
     resp->was_resumpted = false;
-    if(session)
+    if(session) {
       tls_remove_session(gem_tls, session);
+    }
   }
 
   cert = SSL_get_peer_certificate(gem_tls->ssl);
@@ -513,13 +536,15 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
 
   // there may be different certs on different ports and subdomains
   resp->cert_result = tofu_check_cert(&gem_tls->host, hostname_with_portn, hash); 
+   
+  strcpy(fingerprint, hash);
   // printf("CERT: %s", hash);
 
   char url[1024];
   int url_len = snprintf(url, sizeof(url), (GEMINI_SCHEME "%s%s" CLRN), hostname, host_resource);
   assert(url_len > 0);
   if((size_t)url_len > sizeof(url)) {
-    resp->error_message = "Too long url\n";
+    resp->error_message = "Too long url (max 1024 bytes)\n";
     goto error;
   }
 
@@ -585,27 +610,18 @@ int tls_read(struct gemini_tls *gem_tls, struct response *resp) {
 }
 
 
-struct response *tls_request(struct gemini_tls *gem_tls, const char *h) {
-    
-  struct response *resp = calloc(1, sizeof(struct response));
-  if(resp == NULL)
-    MALLOC_ERROR;  
-
-  if(!tls_connect(gem_tls, h, resp)) {
-    tls_reset(gem_tls);
-    return resp;
-  }
-  // TODO!!! check
-  tls_read(gem_tls, resp);
-  tls_reset(gem_tls);
-
+void check_response(struct response *resp) {
   char *crlf;
-
   // <STATUS><SPACE><META><CR><LF>, minimal response is 5 bytes
   if(resp->body_size >= 5 && isdigit(resp->body[0]) && 
-  isdigit(resp->body[1]) && resp->body[2] == ' ' && 
+  isdigit(resp->body[1]) && resp->body[2] == ' ' && resp->body[3] != ' ' && 
   (crlf = strstr(resp->body, "\r\n")) && 
   (crlf - resp->body < 1024 + 3)) {
+
+    if(crlf - 3 != resp->body) {
+      char *meta = resp->body + 3;
+      resp->meta = strndup(meta, crlf - meta);
+    }
 
     int resp_num;
     resp_num = resp->body[1] - '0';
@@ -625,8 +641,6 @@ struct response *tls_request(struct gemini_tls *gem_tls, const char *h) {
     resp->error_message = "Can't connect to the host, invalid response header!";
     resp->status_code = 0;
   }
-
-  return resp;
 }
 
 

@@ -18,5 +18,5 @@ int tofu_load_certs(struct known_host **host);
 int tofu_save_cert(struct known_host **host, char *hostname, char *fingerprint);
 enum tofu_check_results tofu_check_cert(struct known_host **host, char *hostname,
            char *fingerprint);
-
+void tofu_change_cert(struct known_host *host, char *hostname, char *new_fingerprint);
 #endif

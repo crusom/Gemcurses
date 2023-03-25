@@ -70,46 +70,6 @@ int get_valid_query(char **query) {
   return 1;
 }
 
-enum mime_error get_mime_type(char *str, char **mime_ret) {
-  if(str == NULL)
-    return MIME_ERROR_NO_MIME;
-  
-  for(int i = 0; i < 2; i++) {
-    str++;
-    if(*str == '\0')
-      return MIME_ERROR_NO_MIME;
-  }
-  
-  if(!isspace(*str))
-    return MIME_ERROR_NO_SPACE_AFTER_STATUS;    
-
-  str++;
-
-  if(isspace(*str))
-    return MIME_ERROR_MORE_THAN_ONE_SPACE;
-
-  char *p = str;
-  int len = 0;
-  while(*str && !isspace(*str) && *str != ';'){ 
-    len++;
-    str++;
-  }
-
-  if(len == 0)
-    return MIME_ERROR_NO_MIME;
-  else if(len > 1024)
-    return MIME_ERROR_TOO_LONG;
-
-  char *res = malloc(len + 1);
-  if(res == NULL)
-    MALLOC_ERROR;
-
-  strncpy(res, p, len);
-  res[len] = '\0';
-
-  *mime_ret = res;
-  return MIME_ERROR_NONE;
-}
 
 void open_link(char *link) {
   pid_t pid = fork();
@@ -204,7 +164,13 @@ err:
   return 0;
 }
 
-char *get_cache_path(char cache_path[PATH_MAX + 1]) {
+void get_cache_path(char *cache_path, int size) {
+  char *xdg_cache_home = getenv("XDG_CACHE_HOME");
+  if(xdg_cache_home) {
+    if(snprintf(cache_path, size, "%s/%s", xdg_cache_home, ".cache/gemcurses") > size)
+      ERROR_LOG_AND_EXIT("XDG_DATA_HOME directory is too long\n");
+    goto create_dir; 
+  }
   char *home = getenv("HOME");
   // no home? :/
   // ok let's try old good /tmp
@@ -213,14 +179,57 @@ char *get_cache_path(char cache_path[PATH_MAX + 1]) {
     home = "/tmp";
   }
 
-  strcpy(cache_path, home);
+  if(snprintf(cache_path, size, "%s/%s", home, ".cache/gemcurses") > size)
+    ERROR_LOG_AND_EXIT("HOME directory is too long\n");
+  
+create_dir:;
   // add a new cache dir if it doesn't exist yes
   struct stat st;
-  strcat(cache_path, "/.cache/");
   if(stat(cache_path, &st) == -1)
     mkdir(cache_path, 0700);
   
-  return cache_path;
+  return;
+}
+
+
+void get_data_path(char data_path[], int size) {
+  char *xdg_data_home = getenv("XDG_DATA_HOME");
+  if(xdg_data_home) {
+    if(snprintf(data_path, size, "%s/%s", xdg_data_home, ".local/share/gemcurses") > size)
+      ERROR_LOG_AND_EXIT("XDG_DATA_HOME directory is too long\n");
+    return;
+  } 
+
+  char *home = getenv("HOME");
+  if(home == NULL)
+    ERROR_LOG_AND_EXIT("No $HOME environment variable!\n");
+
+  if(snprintf(data_path, size, "%s/%s", home, ".local/share/gemcurses") > size)
+    ERROR_LOG_AND_EXIT("HOME directory is too long\n");
+    
+  // add a new cache dir if it doesn't exist yes
+  struct stat st;
+  if(stat(data_path, &st) == -1)
+    mkdir(data_path, 0700);
+  
+  return;
+}
+void get_file_path_in_data_dir(const char *filename, char buffer[], int size) {
+  char data_path[PATH_MAX - 40];
+  int bytes_written = 0; 
+  get_data_path(data_path, sizeof(data_path));
+  bytes_written = snprintf(buffer, size, "%s/%s", data_path, filename);
+  if(bytes_written < 0 || bytes_written > size) 
+    ERROR_LOG_AND_EXIT("Path to %s in data dir is too long\n", filename);
+}
+
+void get_file_path_in_cache_dir(const char *filename, char buffer[], int size) {
+  char cache_path[PATH_MAX - 40];
+  int bytes_written = 0; 
+  get_cache_path(cache_path, sizeof(cache_path));
+  bytes_written = snprintf(buffer, size, "%s/%s", cache_path, filename);
+  if(bytes_written < 0 || bytes_written > size) 
+    ERROR_LOG_AND_EXIT("Path to %s in cache dir is too long\n", filename);
 }
 
 int get_downloads_path(char downloads_dir[]) {
@@ -229,7 +238,7 @@ int get_downloads_path(char downloads_dir[]) {
   FILE *f = NULL;
   pid_t pid;
 
-  get_cache_path(cache_path);
+  get_cache_path(cache_path, sizeof(cache_path));
 
   strcat(cache_path, "default_download_path.txt");
   remove(cache_path);
@@ -317,7 +326,7 @@ int save_file(char save_path[PATH_MAX + 1], char *buf, char *filename, int size,
 int open_file(char *buf, char *filename, char *app, int size, int offset) {
   
   char save_path[PATH_MAX + 1];
-  get_cache_path(save_path);
+  get_cache_path(save_path, sizeof(save_path));
   strcat(save_path, filename);
   write_file(buf, save_path, size, offset);
 
@@ -330,17 +339,23 @@ inline void free_char_pp(char **p, int n) {
     free(p[i]);
 }
 
-int save_gemsite(char save_path[PATH_MAX + 1], char *url, struct response *resp) {
+int save_gemsite(char save_path[PATH_MAX + 1], int buf_size, char *url, struct response *resp) {
   if(resp->status_code != CODE_SUCCESS || resp->body == NULL) return 0;
   // get the pwd, and iterate over the url, to copy the gemsite into the right directory
   // eg. gem.saayaa.space/gemlog/2022-09-12-like-a-bike.gmi to:
   // ./saved/gem_saayaa_space/gemlog/2022-09-12-like-a-bike.gmi
-  char *pwd = getenv("PWD");   
+  char data_path[PATH_MAX - 20];
+  get_data_path(data_path, sizeof(data_path));
   
   if(strncmp(url, "gemini://", 9) == 0) url += 9;
 
+  if((ssize_t)strlen(data_path) + (ssize_t)strlen(url) >= buf_size) {
+    ERROR_LOG("Url (%s) and data_path (%s) are longer than PATH_MAX\n", url, data_path);
+    return 0;
+  }
+
   struct stat st;
-  strcpy(save_path, pwd);
+  strcpy(save_path, data_path);
   strcat(save_path, "/saved/");
   if(stat(save_path, &st) == -1)
     mkdir(save_path, 0700);
@@ -395,7 +410,7 @@ int save_gemsite(char save_path[PATH_MAX + 1], char *url, struct response *resp)
   strcat(save_path, timestamp);
 
   write_file(resp->body, save_path, resp->body_size, 0);
-  INFO_LOG("saved gemsite: %s", save_path);
+  INFO_LOG("saved gemsite: %s\n", save_path);
 
   return 1;
 }
