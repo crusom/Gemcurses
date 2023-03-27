@@ -41,6 +41,7 @@ struct gemini_tls {
   char *cur_hostname;
 };
 
+
 struct known_host *gem_tls_get_known_hosts(struct gemini_tls *gem_tls) {
   return gem_tls->host;
 }
@@ -54,16 +55,14 @@ static void init_openssl_library(void) {
   SSL_load_error_strings();
 }
 
-static int ssl_session_callback(SSL *ssl, SSL_SESSION *session) {
+static int ssl_session_new_callback(SSL *ssl, SSL_SESSION *session) {
   if(!session) return 0;
 
   struct gemini_tls *gem_tls;
-  
   if((gem_tls = (struct gemini_tls*)SSL_get_ex_data(ssl, 0)) == NULL)
     ERROR_LOG_AND_EXIT("Can't get ex data");
   
   struct session_reuse *sess_p = gem_tls->session;
-  
   while(sess_p) {
 //    INFO_LOG("sess_p->hostname: %s, gem_tls->cur_hostname: %s, are_equal: %d\n", sess_p->hostname, gem_tls->cur_hostname, strcmp(gem_tls->cur_hostname, sess_p->hostname));
     if(strcmp(gem_tls->cur_hostname, sess_p->hostname) == 0){
@@ -84,6 +83,42 @@ static int ssl_session_callback(SSL *ssl, SSL_SESSION *session) {
 
   gem_tls->session_indx++;
   return 0;
+}
+
+static void tls_remove_session(struct gemini_tls *gem_tls, SSL_SESSION *session) {
+
+  struct session_reuse *sess_p = gem_tls->session;
+  struct session_reuse *sess_found = NULL;
+
+  if(sess_p->session == session) {
+    sess_found = sess_p;
+    if(sess_p->next)
+      gem_tls->session = sess_p->next;
+    else
+      gem_tls->session = NULL;
+  }
+
+  while(sess_p) {
+    if(sess_p->next && sess_p->next->session == session){
+      sess_p->next = sess_p->next->next;
+      break;
+    }
+    sess_p = sess_p->next;
+  }
+
+  if(sess_found) {
+    if(sess_found->hostname)
+      free(sess_found->hostname);
+    free(sess_found);
+  }
+}
+
+static void ssl_session_remove_callback(SSL_CTX *ctx, SSL_SESSION *session) {
+  struct gemini_tls *gem_tls;
+  if((gem_tls = (struct gemini_tls*)SSL_CTX_get_ex_data(ctx, 0)) == NULL)
+    ERROR_LOG_AND_EXIT("Can't get ex data");
+
+  tls_remove_session(gem_tls, session);
 }
 
 // for debugging
@@ -111,10 +146,9 @@ static void ssl_info_callback(const SSL * ssl, int where, int ret){
 }
 
 
-static SSL_SESSION *tls_get_session(struct gemini_tls *gem_tls, const char *hostname) {
- 
+SSL_SESSION *tls_get_session(struct gemini_tls *gem_tls, const char *hostname) {
   struct session_reuse *sess_p = gem_tls->session;
-  
+
   while(sess_p) {
     if(strcmp(hostname, sess_p->hostname) == 0){    
       return sess_p->session;
@@ -125,32 +159,6 @@ static SSL_SESSION *tls_get_session(struct gemini_tls *gem_tls, const char *host
   return NULL;
 }
 
-static void tls_remove_session(struct gemini_tls *gem_tls, SSL_SESSION *session) {
-  struct session_reuse *sess_p = gem_tls->session;
-  struct session_reuse *sess_found = NULL;
-
-  if(sess_p->session == session) {
-    sess_found = sess_p;
-    if(sess_p->next)
-      gem_tls->session = sess_p->next;
-    else
-      gem_tls->session = NULL;
-  }    
-
-  while(sess_p) {
-    if(sess_p->next && sess_p->next->session == session){    
-      sess_p->next = sess_p->next->next;
-      break;
-    }
-    sess_p = sess_p->next;
-  }
-  
-  if(sess_found) {
-    if(sess_found->hostname)
-      free(sess_found->hostname);
-    free(sess_found);
-  }
-}
 
 int parse_url(const char **error_message, char *hostname, char **host_resource, char port[6]) {
   size_t gemini_scheme_length = strlen(GEMINI_SCHEME);
@@ -373,7 +381,8 @@ struct gemini_tls* init_tls(int flag) {
   if(SSL_CTX_use_PrivateKey_file(gem_tls->ctx, key_path, SSL_FILETYPE_PEM) != 1) 
     ERROR_LOG_AND_EXIT("Can't load client private key, check if it's valid\n");
 
-  SSL_CTX_sess_set_new_cb(gem_tls->ctx, ssl_session_callback);
+  SSL_CTX_sess_set_new_cb(gem_tls->ctx, ssl_session_new_callback);
+  SSL_CTX_sess_set_remove_cb(gem_tls->ctx, ssl_session_remove_callback);
   SSL_CTX_set_session_cache_mode(gem_tls->ctx, SSL_SESS_CACHE_CLIENT);
   
   if((flag & TLS_DEBUGGING) == 1)
@@ -407,6 +416,7 @@ struct gemini_tls* init_tls(int flag) {
 
   // use ex data in callbacks 
   SSL_set_ex_data(gem_tls->ssl, 0, gem_tls);
+  SSL_CTX_set_ex_data(gem_tls->ctx, 0, gem_tls);
 
   return gem_tls;
 }
@@ -465,7 +475,6 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
 
   if((res = getaddrinfo(hostname, host_port, &hints, &result)) != 0) {
     resp->error_message = "Can't get address info\n";
-//    fprintf(stderr, "Can't set conn hostname: %s\n", gai_strerror(res));
     goto error;
   }
 
@@ -499,7 +508,7 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
     goto error;
   }
 
-  SSL_SESSION *session;
+  SSL_SESSION *session = NULL;
   if((session = tls_get_session(gem_tls, hostname_with_portn)) != NULL) {
     if(SSL_SESSION_is_resumable(session))
       SSL_set_session(gem_tls->ssl, session);
@@ -516,7 +525,6 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
   if(SSL_session_reused(gem_tls->ssl) == 1)
     resp->was_resumpted = true;
   else {
-    // FIXME idk if that's sane, OPENSSL api is fucked up
     resp->was_resumpted = false;
     if(session) {
       tls_remove_session(gem_tls, session);

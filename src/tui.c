@@ -1327,7 +1327,7 @@ func_start:
     print_to_dialog("Fingerprint mistmatch! Do you want to trust it anyway? [y/n]");    
     int selected_opt = dialog_ask(page, *resp, yes_no_options);
     hide_dialog();
-  
+
     if(selected_opt == 'n') {
       tls_reset(gem_tls);
       // info_bar_print("Didn't established connection, because of mistmatched fingerprint.");
