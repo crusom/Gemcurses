@@ -1413,10 +1413,13 @@ input_loop:
           // add a query
           int gemini_url_len = strlen(gemini_url), query_len = strlen(query);
           char *new_link = calloc(1, gemini_url_len + 1 + query_len + 1);
-          
+         
           memcpy(new_link, gemini_url, gemini_url_len + 1);
           new_link[gemini_url_len] = '?';
           memcpy(new_link + gemini_url_len + 1, query, query_len + 1);
+
+          if(was_redirected)
+            free(gemini_url);
           
           gemini_url = new_link;
           was_redirected = true;
@@ -1722,6 +1725,10 @@ err_and_show_meta:
   }
 
 err:
+  // it may happen e.g. we have input, then redirect, and then error
+  if(was_redirected)
+    free(gemini_url);
+
   field_opts_on(search_field[1], O_PUBLIC);
   free_resp(new_resp);
   return 0;
