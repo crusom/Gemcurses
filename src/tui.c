@@ -1509,7 +1509,7 @@ input_loop:
           info_bar_print("Didn't open the file");
       }
       else {
-        print_to_dialog("Not known mimetype. Do you want to save %s? [y/n]", filename);
+        print_to_dialog("Not known mimetype %s\nDo you want to save %s? [y/n]", mime_type, filename);
         
         selected_opt = dialog_ask(page, *resp, yes_no_options);
         if(selected_opt == 'y') {
