@@ -14,10 +14,11 @@
 #include "util.h"
 #include "utf8.h"
 
-#define SAVED_DIR "saved/"
-#define MAIN_GEM_SITE "warmedal.se/~antenna/"
 #define set_main_win_x(max_x) main_win_x = max_x - offset_x - 1
 #define set_main_win_y(max_y) main_win_y = max_y - search_bar_height - info_bar_height - 1 - 1
+
+#define SAVED_DIR "saved/"
+#define MAIN_GEM_SITE "warmedal.se/~antenna/"
 
 typedef void (*println_func_def) (WINDOW *, struct screen_line*, int x, int y);
 
@@ -1462,7 +1463,7 @@ input_loop:
       // if the mime_type is something else than a gempage, then let's save it, with the filename of the requested resource   
   
       char *filename = strrchr(gemini_url, '/');
-      if(filename == NULL || strlen(filename) == 1) {
+      if(filename == NULL || strlen(filename) <= 1) {
         info_bar_print("Should be a file, not a directory?");
         goto err;
       }
@@ -1474,11 +1475,15 @@ input_loop:
       // skip the header
       while(new_resp->body[header_offset++] != '\n'); 
 
-      char default_app[NAME_MAX + 1];
       char selected_opt;
+      char default_app[NAME_MAX + 1], file_type[1024];
+
+      strcpy(file_type, mime_type);
+      char *deli = strchr(file_type, ';');
+      if(deli) *deli = '\0';
 
       show_dialog(INFO);
-      if(get_default_app(mime_type, default_app)) {
+      if(get_default_app(file_type, default_app)) {
         print_to_dialog("If you want to open %s [o], if save [s], if nothing [n]", filename);
         const char options[] = {'o', 's', 'n'};
         
@@ -1512,7 +1517,7 @@ input_loop:
           info_bar_print("Didn't open the file");
       }
       else {
-        print_to_dialog("Not known mimetype %s\nDo you want to save %s? [y/n]", mime_type, filename);
+        print_to_dialog("Not known mimetype %s\nDo you want to save %s? [y/n]", file_type, filename);
         
         selected_opt = dialog_ask(page, *resp, yes_no_options);
         if(selected_opt == 'y') {
@@ -2123,7 +2128,7 @@ int main(int argc, char **argv) {
 //          print_current_mode();
 //          if(is_offline) {
 //            show_dialog(OFFLINE);
-//            // load_offline_dirs();
+//            load_offline_dirs();
 //            if(offline_dirs.lines[0])
 //              print_page(&offline_dirs, dialog_subwin, 0, dialog_subwin_y, NULL);
 //            current_focus = BOOKMARKS_DIALOG;
