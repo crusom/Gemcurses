@@ -664,13 +664,14 @@ static void print_page(
     print_func = &printline;
   // print all we can
   for(int i = 0; i < page_y; i++){
+    if(index >= page->lines_num)
+      break;
     line = page->lines[index];
     print_func(win, line, offset_x, i);
     index++;
-    if(index >= page->lines_num)
-      break;
   }
 
+  assert(index >= 0);
   page->last_line_index = index;
   page->first_line_index = first_line_index;
   
@@ -2011,7 +2012,7 @@ int main(int argc, char **argv) {
             }
             // free link in bookmarks 
             struct screen_line *line;
-            int first_index = -1, num_indexes = 0;
+            int first_index = -1, lines_to_delete_num = 0;
             char *link_to_free = NULL;
             for(int i = 0; i < bookmarks.lines_num; i++) {
               line = bookmarks.lines[i];
@@ -2023,21 +2024,22 @@ int main(int argc, char **argv) {
                   first_index = i;
                   link_to_free = line->link;
                 }
-                num_indexes++;
+                lines_to_delete_num++;
                 free(line);
               }
             }
             if(link_to_free)
               free(link_to_free);
 
-            int last_index = first_index + num_indexes;
+            int last_index = first_index + lines_to_delete_num;
+            // if it's the last line then bookmarks.lines_num - last_line is 0, so no move
             memmove(
               &bookmarks.lines[first_index], 
               &bookmarks.lines[last_index], 
               sizeof(struct screen_line*) *(bookmarks.lines_num - last_index)
             );
             
-            bookmarks.lines_num -= num_indexes;
+            bookmarks.lines_num -= lines_to_delete_num;
             if (bookmarks.lines_num > 0)
               bookmarks.lines = realloc(
                   bookmarks.lines, 
@@ -2049,14 +2051,24 @@ int main(int argc, char **argv) {
             }
          
 
+            // we deleted a bookmark at the end so the screen needs to go down a bit right
             if(bookmarks.lines_num != 0 && bookmarks.last_line_index > bookmarks.lines_num - 1) {
-              if(bookmarks.first_line_index > (bookmarks.last_line_index - bookmarks.lines_num - 1))
-                bookmarks.first_line_index -= (bookmarks.last_line_index - (bookmarks.lines_num - 1));
+              /*
+              if(bookmarks.first_line_index > bookmarks.last_line_index - bookmarks.lines_num - 1)
+                bookmarks.first_line_index -= bookmarks.last_line_index - (bookmarks.lines_num - 1);
+              */
+              if(bookmarks.first_line_index - lines_to_delete_num >= 0)
+                bookmarks.first_line_index -= lines_to_delete_num;
               else
                 bookmarks.first_line_index = 0;
+                
               bookmarks.last_line_index = bookmarks.lines_num - 1;
             }
             
+            // i dont trust myself at all
+            assert(bookmarks.first_line_index >= 0);
+            assert(bookmarks.last_line_index >= 0);
+            assert(bookmarks.lines_num >= 0);
 
             delete_bookmark(url);
 
