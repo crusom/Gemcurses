@@ -19,7 +19,7 @@
 #define _LOG(format, ...) { \
   char buf[80]; \
   get_datatime(buf, sizeof(buf)); \
-  fprintf(stderr, "%s: " format, buf, ##__VA_ARGS__); \
+  fprintf(stderr, "%s: " format "\n", buf, ##__VA_ARGS__); \
   fflush(stderr); \
 }
 

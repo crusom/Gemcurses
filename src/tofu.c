@@ -3,6 +3,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <assert.h>
 
@@ -41,7 +42,7 @@ int tofu_save_cert(struct known_host **host, char *hostname, char *fingerprint) 
 
   FILE *f = fopen(hosts_path, "a");
   if(f == NULL)
-    ERROR_LOG_AND_EXIT("ERROR: Can't open \"%s\"", hosts_path);  
+    ERROR_LOG_AND_EXIT("Can't open \"%s\"", hosts_path);  
 
   // i use SHA-512
   fprintf(f, "%s %s\n", hostname, fingerprint);
@@ -61,7 +62,7 @@ void tofu_change_cert(struct known_host *host, char *hostname_with_portn, char *
 
   FILE *f = fopen(hosts_path, "r+");
   if(f == NULL)
-    ERROR_LOG_AND_EXIT("ERROR: Can't open \"%s\" file", hosts_path);  
+    ERROR_LOG_AND_EXIT("Can't open \"%s\" file", hosts_path);  
 
   char *line = NULL;
   size_t n = 0;
@@ -95,10 +96,10 @@ void tofu_change_cert(struct known_host *host, char *hostname_with_portn, char *
 int tofu_load_certs(struct known_host **host) {
   char hosts_path[PATH_MAX + 1];
   get_file_path_in_data_dir(host_filename, hosts_path, sizeof(hosts_path));  
-
-  FILE *f = fopen(hosts_path, "r");
+  
+  FILE *f = fopen(hosts_path, "a+");
   if(f == NULL)
-    ERROR_LOG_AND_EXIT("ERROR: Can't open \"%s\" file", hosts_path);  
+    ERROR_LOG_AND_EXIT("Can't open \"%s\" file", hosts_path);  
     
   size_t n = 0;
   int lineno = 1;
@@ -135,8 +136,8 @@ int tofu_load_certs(struct known_host **host) {
     *host = tmp_host;
   }
 
-  assert(*host);
-
-  free(line);
+  // assert(*host);
+  if (line)
+    free(line);
   return 1;
 }

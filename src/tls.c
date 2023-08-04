@@ -326,6 +326,10 @@ static void tls_create_cert(char *key_path, char *cert_path) {
     ERROR_LOG_AND_ABORT("Can't open private key file for writing\n");
  
   int ret = PEM_write_PrivateKey(f, pkey, NULL, NULL, 0, NULL, NULL);
+  // free pkey
+  EVP_PKEY_free(pkey);
+  pkey = NULL;
+  // close the written pkey file
   fclose(f);
 
   if(!ret)
@@ -341,6 +345,8 @@ static void tls_create_cert(char *key_path, char *cert_path) {
   if(!ret) 
     ERROR_LOG_AND_ABORT("Can't write cert to file\n");
 
+  EVP_PKEY_CTX_free(ctx);
+  X509_free(x509);
 }
 
 struct gemini_tls* init_tls(int flag) {

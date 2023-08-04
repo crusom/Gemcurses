@@ -207,7 +207,7 @@ void get_data_path(char data_path[], int size) {
   if(snprintf(data_path, size, "%s/%s", home, ".local/share/gemcurses") > size)
     ERROR_LOG_AND_EXIT("HOME directory is too long\n");
     
-  // add a new cache dir if it doesn't exist yes
+  // add a new data dir if it doesn't exist yes
   struct stat st;
   if(stat(data_path, &st) == -1)
     mkdir(data_path, 0700);

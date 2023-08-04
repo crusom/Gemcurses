@@ -457,7 +457,6 @@ static int get_paragraph_attr(char **paragraph, char **link, enum protocols *pro
         paragraph_end++;
         offset++;
       }
-     
       // if there is no '<USER_FRIENDLY LINK NAME>' then show the plain URL
       if(*paragraph_end == '\0') {
         *protocol = null;
@@ -2039,10 +2038,15 @@ int main(int argc, char **argv) {
             );
             
             bookmarks.lines_num -= num_indexes;
-            bookmarks.lines = realloc(
-                bookmarks.lines, 
-                sizeof(struct screen_line*) * bookmarks.lines_num
-            );
+            if (bookmarks.lines_num > 0)
+              bookmarks.lines = realloc(
+                  bookmarks.lines, 
+                  sizeof(struct screen_line*) * bookmarks.lines_num
+              );
+            else {
+              free(bookmarks.lines);
+              bookmarks.lines = NULL;
+            }
          
 
             if(bookmarks.lines_num != 0 && bookmarks.last_line_index > bookmarks.lines_num - 1) {
@@ -2068,7 +2072,12 @@ int main(int argc, char **argv) {
                
             num_bookmarks_links--;
             
-            bookmarks_links = realloc(bookmarks_links, sizeof(char*) * num_bookmarks_links);
+            if (num_bookmarks_links > 0)
+              bookmarks_links = realloc(bookmarks_links, sizeof(char*) * num_bookmarks_links);
+            else {
+              free(bookmarks_links);
+              bookmarks_links = NULL;
+            }
             break;
           }
 
