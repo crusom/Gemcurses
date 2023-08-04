@@ -75,7 +75,7 @@ static int ssl_session_new_callback(SSL *ssl, SSL_SESSION *session) {
  
   struct session_reuse *tmp_sess;
   tmp_sess = (struct session_reuse*) calloc(1, sizeof(struct session_reuse));
-  INFO_LOG("cur_hostname: %s\n", gem_tls->cur_hostname);
+  //INFO_LOG("cur_hostname: %s", gem_tls->cur_hostname);
   tmp_sess->hostname = strdup(gem_tls->cur_hostname);  
   tmp_sess->session = session;
   tmp_sess->next = gem_tls->session;

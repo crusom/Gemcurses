@@ -197,7 +197,7 @@ void get_data_path(char data_path[], int size) {
   if(xdg_data_home) {
     if(snprintf(data_path, size, "%s/%s", xdg_data_home, ".local/share/gemcurses") > size)
       ERROR_LOG_AND_EXIT("XDG_DATA_HOME directory is too long\n");
-    return;
+    goto create_dir;
   } 
 
   char *home = getenv("HOME");
@@ -206,7 +206,7 @@ void get_data_path(char data_path[], int size) {
 
   if(snprintf(data_path, size, "%s/%s", home, ".local/share/gemcurses") > size)
     ERROR_LOG_AND_EXIT("HOME directory is too long\n");
-    
+create_dir:;  
   // add a new data dir if it doesn't exist yes
   struct stat st;
   if(stat(data_path, &st) == -1)
@@ -240,7 +240,7 @@ int get_downloads_path(char downloads_dir[]) {
 
   get_cache_path(cache_path, sizeof(cache_path));
 
-  strcat(cache_path, "default_download_path.txt");
+  strcat(cache_path, "/default_download_path.txt");
   remove(cache_path);
   pid = fork();
   if(pid == 0) {
@@ -264,22 +264,32 @@ int get_downloads_path(char downloads_dir[]) {
     fseek(f, 0L, SEEK_SET);
 
     // something terrible happened
-    if(path_length > PATH_MAX + 1 || path_length < 2) {
-      INFO_LOG("Download path too long");
+    if(path_length > PATH_MAX + 1) {
+      ERROR_LOG("Download path too long");
       goto err;
     }
+    if(path_length < 2)
+      goto fallback;
 
     if(fgets(buf, PATH_MAX + 1, (FILE *)f) == NULL) {
-      INFO_LOG("Can't read download path");
+      ERROR_LOG("Can't read download path");
       goto err;
     }
   
     buf[path_length - 1] = '\0';
 
     strcpy(downloads_dir, buf);
-    strcat(downloads_dir, "/");
   }
   return 1;
+
+fallback:
+  if(f)
+    fclose(f);
+  char *home = getenv("HOME");
+  if(!home) ERROR_LOG_AND_EXIT("There's no HOME env for some reason");
+  sprintf(downloads_dir, "%s/Downloads", home);
+  return 1;
+
 
 err:
     if(f)
@@ -291,7 +301,7 @@ err:
 void write_file(char *buf, char *save_path, int size, int offset) {
   FILE *f = fopen(save_path, "wb");
   if(f == NULL) 
-    ERROR_LOG_AND_EXIT("ERROR: cant open save_path\n");
+    ERROR_LOG_AND_EXIT("can't open save_path\n");
   
   fwrite(buf + offset, sizeof(char), size - offset, f);
   fclose(f);
@@ -316,6 +326,7 @@ int save_file(char save_path[PATH_MAX + 1], char *buf, char *filename, int size,
   else
     strcpy(save_path, env);
   
+  strcat(save_path, "/");  
   strcat(save_path, filename);  
   write_file(buf, save_path, size, offset);
 
@@ -327,6 +338,7 @@ int open_file(char *buf, char *filename, char *app, int size, int offset) {
   
   char save_path[PATH_MAX + 1];
   get_cache_path(save_path, sizeof(save_path));
+  strcat(save_path, "/");
   strcat(save_path, filename);
   write_file(buf, save_path, size, offset);
 
