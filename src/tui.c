@@ -1349,6 +1349,7 @@ func_start:
     info_bar_print(new_resp->error_message);
     goto err;
   }
+
   check_response(new_resp);
   if(new_resp->error_message != NULL) {
     info_bar_print(new_resp->error_message);
@@ -1445,23 +1446,32 @@ input_loop:
       field_opts_on(search_field[1], O_PUBLIC);
       break;
     
-    case CODE_SUCCESS:;
+    case 20 ... 29:;
+      // if it's a valid text response, then break, and it'll be shown
+      // if it's not a gemini text or has different charset than utf8, then go on, and save it
+      bool not_utf8_flag = false;
       char *mime_type = new_resp->meta;
-    
-      if(m_strncmp(mime_type, "text/gemini") == 0 || m_strncmp(mime_type, "text/plain") == 0 ||
-         m_strncmp(new_resp->body + 3, "\r\n") == 0) {
-        // if there's a specified charset, and it's not utf8, then don't show it, but go and ask for download instead
-//        INFO_LOG("mime_type %s\n", mime_type);
-        char *charset;
+      char *charset = NULL;
+      if (!mime_type) break;
+
+
+      if(m_strncmp(mime_type, "text/gemini") == 0 || m_strncmp(mime_type, "text/plain") == 0) {
         if((charset = strstr(mime_type, "charset=")) != NULL && 
             strncasecmp(charset + 8, "utf-8", 5) != 0 && 
-            strncasecmp(charset + 8, "utf8", 4) != 0) {}
+            strncasecmp(charset + 8, "utf8", 4) != 0  &&
+            // a subset of utf8
+            strncasecmp(charset + 8, "us-ascii", 8) != 0 &&
+            strncasecmp(charset + 8, "usascii", 7) != 0
+          ) {
+            not_utf8_flag = true;
+            goto go_save_it;
+        }
         else {
           break;
         }
       }
+go_save_it:;
       // if the mime_type is something else than a gempage, then let's save it, with the filename of the requested resource   
-  
       char *filename = strrchr(gemini_url, '/');
       if(filename == NULL || strlen(filename) <= 1) {
         info_bar_print("Should be a file, not a directory?");
@@ -1476,14 +1486,10 @@ input_loop:
       while(new_resp->body[header_offset++] != '\n'); 
 
       char selected_opt;
-      char default_app[NAME_MAX + 1], file_type[1024];
-
-      strcpy(file_type, mime_type);
-      char *deli = strchr(file_type, ';');
-      if(deli) *deli = '\0';
+      char default_app[NAME_MAX + 1];
 
       show_dialog(INFO);
-      if(get_default_app(file_type, default_app)) {
+      if(get_default_app(mime_type, default_app)) {
         print_to_dialog("If you want to open %s [o], if save [s], if nothing [n]", filename);
         const char options[] = {'o', 's', 'n'};
         
@@ -1517,7 +1523,8 @@ input_loop:
           info_bar_print("Didn't open the file");
       }
       else {
-        print_to_dialog("Not known mimetype %s\nDo you want to save %s? [y/n]", file_type, filename);
+        if (not_utf8_flag && charset)
+          print_to_dialog("Not known charset '%s'\nDo you want to save %s? [y/n]", charset, filename);
         
         selected_opt = dialog_ask(page, *resp, yes_no_options);
         if(selected_opt == 'y') {
@@ -1917,6 +1924,27 @@ int main(int argc, char **argv) {
           }
         break;
 
+//        case 'L':;
+//          if(!gem_page->url || resp == NULL) break;
+//          int wstatus;
+//          pid_t pid, w;
+//          pid = fork();
+//          
+//          if(pid == -1) {
+//            info_bar_print("Can't fork :/\n");
+//          }
+//          if(pid == 0){
+//            char save_path[PATH_MAX + 1];
+//            if(!save_gemsite(save_path, sizeof(save_path), gem_page->url, resp)) exit(0);
+//            char *para[] = { "/bin/less", "-R", save_path, 0 };
+//            execv(para[0], para);
+//          }
+//          else {
+//            waitpid(pid, &wstatus, 0);
+//          }
+//
+//        break;
+        
         case 'B':;
           if(!is_offline) {
             int res = request_gem_page(

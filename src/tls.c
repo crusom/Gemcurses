@@ -636,6 +636,10 @@ void check_response(struct response *resp) {
       char *meta = resp->body + 3;
       resp->meta = strndup(meta, crlf - meta);
     }
+    else
+      resp->meta = NULL;
+//    else
+//      resp->meta = "";
 
     int resp_num;
     resp_num = resp->body[1] - '0';
@@ -648,6 +652,9 @@ void check_response(struct response *resp) {
         break;
       }
     }
+    if (resp_num >= 20 && resp_num <= 29)
+      valid_response_code = true;
+
     if(valid_response_code == false)
       resp->error_message = "Invalid status code!";
   }
