@@ -17,6 +17,8 @@ LDFLAGS = -L/usr/local/ssl/lib
 #openssl >=3.0 default location
 #LDFLAGS = -L/usr/local/lib64/
 
+#SANITIZER = -fsanitize=undefined,address
+
 gemcurses: $(OBJ)
 		$(CC) -o $@ $^ $(LDFLAGS) $(CFLAGS) $(LIBS)
 

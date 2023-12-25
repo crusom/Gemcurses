@@ -666,8 +666,27 @@ void check_response(struct response *resp) {
 
 
 void tls_reset(struct gemini_tls *gem_tls) {
+  // (the previous code stopped working since openssl 3.2.0)
+  // it turns out that i shouldn't have been doing just BIO_reset, because it's not 
+  // completely clearing the state
+  // i've read that freeing the bio_web object and initalizing it again is safer.
+  // valgrind seems happy :) 
+  void *ex_data = SSL_get_ex_data(gem_tls->ssl, 0);
+  
   BIO_ssl_shutdown(gem_tls->bio_web);
-  BIO_reset(gem_tls->bio_web);
+  BIO_free_all(gem_tls->bio_web);
+
+  gem_tls->bio_web = BIO_new_ssl_connect(gem_tls->ctx);
+  if(gem_tls->bio_web == NULL)
+    ERROR_LOG_AND_ABORT("Can't create bio new ssl connect\n");
+
+  BIO_get_ssl(gem_tls->bio_web, &gem_tls->ssl);
+  if(gem_tls->ssl == NULL)
+    ERROR_LOG_AND_ABORT("Can't get ssl\n");
+  
+  SSL_set_ex_data(gem_tls->ssl, 0, ex_data);
+
+  //BIO_reset(gem_tls->bio_web);
   BIO_reset(gem_tls->bio_out);
   BIO_reset(gem_tls->bio_mem);
 
