@@ -2,7 +2,13 @@
 #define GEMINI_TLS_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include "tofu.h"
+
+enum tls_flags {
+  TLS_DEBUGGING    = 1 << 0,
+  TLS_NO_USER_CERT = 1 << 1,
+};
 
 enum response_status_codes {
 // 1X INPUT
@@ -48,7 +54,7 @@ typedef struct gemini_tls *Gemini_tls;
 struct known_host *gem_tls_get_known_hosts(struct gemini_tls *gem_tls);
 char *gem_tls_get_cur_hostname(struct gemini_tls *gem_tls);
 
-Gemini_tls init_tls(int flag);
+Gemini_tls init_tls(uint32_t flag);
 void check_response(struct response *resp);
 int tls_connect(Gemini_tls gem_tls, const char *h, struct response *resp, char fingerprint[]);
 int tls_read(Gemini_tls gem_tls, struct response *resp);

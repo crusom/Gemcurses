@@ -18,10 +18,6 @@
 #define KEY_FILENAME "key.pem" 
 #define CERT_FILENAME  "cert.pem"
 
-enum {
-  TLS_DEBUGGING = 1 << 0,
-};
-
 static int all_status_codes[] = {10, 11, 20, 30, 31, 40, 41, 42, 43, 44, 50, 51, 52, 53, 59, 60, 61, 62};
 
 struct session_reuse {
@@ -124,24 +120,29 @@ static void ssl_session_remove_callback(SSL_CTX *ctx, SSL_SESSION *session) {
 // for debugging
 static void ssl_info_callback(const SSL * ssl, int where, int ret){
   (void)ret; // unused
-  
+
+  char debug_path[PATH_MAX + 1];
+  get_file_path_in_data_dir("debug.txt", debug_path, sizeof(debug_path));
+  FILE *f_debug = fopen(debug_path, "a");
+
   if(where & SSL_CB_HANDSHAKE_START){
     SSL_SESSION *session = SSL_get_session(ssl);
     if(session) {
-      printf("handshake begin %p %p %ld %ld\n", (void*)ssl, (void*)session, SSL_SESSION_get_time(session), SSL_SESSION_get_timeout(session));
+      fprintf(f_debug, "handshake begin %p %p %ld %ld\n", (void*)ssl, (void*)session, SSL_SESSION_get_time(session), SSL_SESSION_get_timeout(session));
     }
     else {
-      printf("handshake begin %p %p \n", (void*)ssl, (void*)session);
+      fprintf(f_debug, "handshake begin %p %p \n", (void*)ssl, (void*)session);
     }
   }
 
   if(where & SSL_CB_HANDSHAKE_DONE){
     SSL_SESSION * session = SSL_get_session(ssl);
-    printf("handshake done %p reused %d %ld %ld\n",(void*)session, SSL_session_reused((SSL*)ssl),
+    fprintf(f_debug, "handshake done %p reused %d %ld %ld\n",(void*)session, SSL_session_reused((SSL*)ssl),
                                   SSL_SESSION_get_time(session), SSL_SESSION_get_timeout(session));
     
-    SSL_SESSION_print_fp(stdout,session);
+    SSL_SESSION_print_fp(f_debug, session);
   }
+  fclose(f_debug);
 
 }
 
@@ -287,20 +288,20 @@ static void tls_create_cert(char *key_path, char *cert_path) {
   ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
   
   if(!ctx)
-    ERROR_LOG_AND_ABORT("Can't create EVP context\n");
+    ERROR_LOG_AND_ABORT("Can't create EVP context");
      
   if(EVP_PKEY_keygen_init(ctx) <= 0)
-    ERROR_LOG_AND_ABORT("Can't init EVP\n");
+    ERROR_LOG_AND_ABORT("Can't init EVP");
 
   if(EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0)
-    ERROR_LOG_AND_ABORT("Can't set RSA bits\n");
+    ERROR_LOG_AND_ABORT("Can't set RSA bits");
 
   if(EVP_PKEY_keygen(ctx, &pkey) <= 0)
-    ERROR_LOG_AND_ABORT("Can't generate RSA key\n");
+    ERROR_LOG_AND_ABORT("Can't generate RSA key");
 
   X509 *x509 = X509_new();
   if(!x509)
-    ERROR_LOG_AND_ABORT("Can't create x509 structure\n");
+    ERROR_LOG_AND_ABORT("Can't create x509 structure");
 
   ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
   X509_gmtime_adj(X509_get_notBefore(x509), 0);
@@ -319,11 +320,11 @@ static void tls_create_cert(char *key_path, char *cert_path) {
 
   X509_set_issuer_name(x509, name);
   if(!X509_sign(x509, pkey, EVP_sha256()))
-    ERROR_LOG_AND_ABORT("Can't sign certificate\n");
+    ERROR_LOG_AND_ABORT("Can't sign certificate");
 
   FILE *f = fopen(key_path, "wb");
   if(!f)
-    ERROR_LOG_AND_ABORT("Can't open private key file for writing\n");
+    ERROR_LOG_AND_ABORT("Can't open private key file for writing");
  
   int ret = PEM_write_PrivateKey(f, pkey, NULL, NULL, 0, NULL, NULL);
   // free pkey
@@ -333,26 +334,25 @@ static void tls_create_cert(char *key_path, char *cert_path) {
   fclose(f);
 
   if(!ret)
-    ERROR_LOG_AND_ABORT("Can't write private key to file\n");
+    ERROR_LOG_AND_ABORT("Can't write private key to file");
 
   f = fopen(cert_path, "wb");
   if(!f) 
-    ERROR_LOG_AND_ABORT("Can't open cert file for writing\n");
+    ERROR_LOG_AND_ABORT("Can't open cert file for writing");
 
   ret = PEM_write_X509(f, x509);
   fclose(f);
   
   if(!ret) 
-    ERROR_LOG_AND_ABORT("Can't write cert to file\n");
+    ERROR_LOG_AND_ABORT("Can't write cert to file");
 
   EVP_PKEY_CTX_free(ctx);
   X509_free(x509);
 }
 
-struct gemini_tls* init_tls(int flag) {
-  
+struct gemini_tls* init_tls(uint32_t option_flags) {
+ 
   struct gemini_tls* gem_tls = (struct gemini_tls*) calloc(1, sizeof(struct gemini_tls));
-  int res;
 
   if(!gem_tls)
     MALLOC_ERROR;
@@ -367,58 +367,59 @@ struct gemini_tls* init_tls(int flag) {
   
   const SSL_METHOD* method = TLS_client_method();
   if(method == NULL) 
-    ERROR_LOG_AND_ABORT("Can't set SSL method\n");
+    ERROR_LOG_AND_ABORT("Can't set SSL method");
 
   gem_tls->ctx = SSL_CTX_new(method);
   if(gem_tls->ctx == NULL) 
-    ERROR_LOG_AND_ABORT("Can't create new context\n");
+    ERROR_LOG_AND_ABORT("Can't create new context");
 
+  if((option_flags & TLS_NO_USER_CERT) == 0) {
+    char key_path[PATH_MAX + 1], cert_path[PATH_MAX + 1];
+    get_file_path_in_data_dir(KEY_FILENAME, key_path, sizeof(key_path));  
+    get_file_path_in_data_dir(CERT_FILENAME, cert_path, sizeof(cert_path));  
 
-  char key_path[PATH_MAX + 1], cert_path[PATH_MAX + 1];
-  get_file_path_in_data_dir(KEY_FILENAME, key_path, sizeof(key_path));  
-  get_file_path_in_data_dir(CERT_FILENAME, cert_path, sizeof(cert_path));  
+    if(access(cert_path, F_OK ) != 0 || access(key_path, F_OK) != 0)
+      tls_create_cert(key_path, cert_path);
 
-  if(access(cert_path, F_OK ) != 0 || access(key_path, F_OK) != 0)
-    tls_create_cert(key_path, cert_path);
+    if(SSL_CTX_use_certificate_file(gem_tls->ctx, cert_path, SSL_FILETYPE_PEM) != 1)
+      ERROR_LOG_AND_EXIT("Can't load client cert, check if it's valid");
 
-  if(SSL_CTX_use_certificate_file(gem_tls->ctx, cert_path, SSL_FILETYPE_PEM) != 1)
-    ERROR_LOG_AND_EXIT("Can't load client cert, check if it's valid\n");
-
-  if(SSL_CTX_use_PrivateKey_file(gem_tls->ctx, key_path, SSL_FILETYPE_PEM) != 1) 
-    ERROR_LOG_AND_EXIT("Can't load client private key, check if it's valid\n");
+    if(SSL_CTX_use_PrivateKey_file(gem_tls->ctx, key_path, SSL_FILETYPE_PEM) != 1) 
+      ERROR_LOG_AND_EXIT("Can't load client private key, check if it's valid");
+  }
 
   SSL_CTX_sess_set_new_cb(gem_tls->ctx, ssl_session_new_callback);
   SSL_CTX_sess_set_remove_cb(gem_tls->ctx, ssl_session_remove_callback);
   SSL_CTX_set_session_cache_mode(gem_tls->ctx, SSL_SESS_CACHE_CLIENT);
   
-  if((flag & TLS_DEBUGGING) == 1)
+  if((option_flags & TLS_DEBUGGING) == 1)
     SSL_CTX_set_info_callback(gem_tls->ctx, ssl_info_callback);
   
   SSL_CTX_set_verify_depth(gem_tls->ctx, 4);
   // disable SSL because it's obsolete and dangerous
-  const uint64_t flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
-  SSL_CTX_set_options(gem_tls->ctx, flags);
+  const uint64_t tls_flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
+  SSL_CTX_set_options(gem_tls->ctx, tls_flags);
 
   gem_tls->bio_web = BIO_new_ssl_connect(gem_tls->ctx);
   if(gem_tls->bio_web == NULL)
-    ERROR_LOG_AND_ABORT("Can't create bio new ssl connect\n");
+    ERROR_LOG_AND_ABORT("Can't create bio new ssl connect");
   
   gem_tls->bio_out = BIO_new_fp(stdout, BIO_NOCLOSE);
   if(gem_tls->bio_out == NULL)
-    ERROR_LOG_AND_ABORT("Can't create new fp\n");
+    ERROR_LOG_AND_ABORT("Can't create new fp");
  
   gem_tls->bio_mem = BIO_new(BIO_s_mem());
   if(gem_tls->bio_mem == NULL)
-    ERROR_LOG_AND_ABORT("Can't create new fp\n");
+    ERROR_LOG_AND_ABORT("Can't create new fp");
 
   BIO_get_ssl(gem_tls->bio_web, &gem_tls->ssl);
   if(gem_tls->ssl == NULL)
-    ERROR_LOG_AND_ABORT("Can't get ssl\n");
+    ERROR_LOG_AND_ABORT("Can't get ssl");
   
   const char* const PREFERRED_CIPHERS = "HIGH:!aNULL:!kRSA:!PSK:!SRP:!MD5:!RC4";
-  res = SSL_set_cipher_list(gem_tls->ssl, PREFERRED_CIPHERS);
+  int res = SSL_set_cipher_list(gem_tls->ssl, PREFERRED_CIPHERS);
   if(res == 0)
-    ERROR_LOG_AND_ABORT("Can't set cipher list\n");
+    ERROR_LOG_AND_ABORT("Can't set cipher list");
 
   // use ex data in callbacks 
   SSL_set_ex_data(gem_tls->ssl, 0, gem_tls);
@@ -477,7 +478,9 @@ int tls_connect(struct gemini_tls *gem_tls, const char *h, struct response *resp
 
   int fd = -1;
   struct timeval tv = {0};
-  tv.tv_sec = 2;
+  // so, this thing is for the sake of not trying to connect for the infinite amount of time.
+  // 5 seconds is quite long, but it can take long if you're trying to connect to some server at the other end of the world
+  tv.tv_sec = 5;
 
   if((res = getaddrinfo(hostname, host_port, &hints, &result)) != 0) {
     resp->error_message = "Can't get address info\n";
@@ -678,11 +681,11 @@ void tls_reset(struct gemini_tls *gem_tls) {
 
   gem_tls->bio_web = BIO_new_ssl_connect(gem_tls->ctx);
   if(gem_tls->bio_web == NULL)
-    ERROR_LOG_AND_ABORT("Can't create bio new ssl connect\n");
+    ERROR_LOG_AND_ABORT("Can't create bio new ssl connect");
 
   BIO_get_ssl(gem_tls->bio_web, &gem_tls->ssl);
   if(gem_tls->ssl == NULL)
-    ERROR_LOG_AND_ABORT("Can't get ssl\n");
+    ERROR_LOG_AND_ABORT("Can't get ssl");
   
   SSL_set_ex_data(gem_tls->ssl, 0, ex_data);
 

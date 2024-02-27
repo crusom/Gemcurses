@@ -1762,29 +1762,47 @@ err:
 static inline void print_help(void) {
     puts("\
 A gemini ncurses client.\n\
+gemcurses <option>\n\
+Options:\n\
+  -d,           debug (prints to debug.txt in data path)\n\
+  -n,           don't use user certificates (some servers may not accept them)\n\
 Usage:\n\
-  KEY 	ACTION\n\
-  arrows up/down 	go down or up on the page\n\
-  / 	search\n\
-  q 	change to link-mode/scroll-mode\n\
-  enter 	go to a link\n\
-  B 	go to the defined main gemsite (antenna)\n\
-  P 	show bookmarks dialog\n\
-  S 	save the gemsite\n\
-  C 	show url of the selected link\n\
-  A 	bookmark current gemsite\n\
-  PgUp/PgDn 	go page up or page down\n\
-  mouse scroll 	scroll\n\
+  KEY 	          ACTION\n\
+  arrows up/down  go down or up on the page\n\
+  / 	          search\n\
+  q 	          change to link-mode/scroll-mode\n\
+  enter           go to a link\n\
+  B 	          go to the defined main gemsite (antenna)\n\
+  P 	          show bookmarks dialog\n\
+  S 	          save the gemsite\n\
+  C 	          show url of the selected link\n\
+  A 	          bookmark current gemsite\n\
+  PgUp/PgDn 	  go page up or page down\n\
+  mouse scroll    scroll\n\
   \n\
 You can find data at $XDG_DATA_HOME or $HOME/.local/share/gemcurses\
 ");
 }
 
 int main(int argc, char **argv) {
-  if(argc == 2 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
-    print_help();
-    return EXIT_SUCCESS;
+
+  uint32_t tls_init_flags = 0;
+  int opt;
+  while ((opt = getopt(argc, argv, "dnh")) != -1) {
+    switch (opt) {
+      case 'd': tls_init_flags |= TLS_DEBUGGING;    break;
+      case 'n': tls_init_flags |= TLS_NO_USER_CERT; break;
+      case 'h':
+      default:
+        print_help();
+        exit(EXIT_SUCCESS);
+    }
   }
+
+//  if(argc == 2 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
+//    print_help();
+//    return EXIT_SUCCESS;
+//  }
 
   // set encoding for emojis
   // however some emojis may not work
@@ -1797,6 +1815,13 @@ int main(int argc, char **argv) {
     get_file_path_in_data_dir("log.txt", log_path, sizeof(log_path));
     freopen(log_path, "a", stderr);
   }
+  // delete old debug.txt, the file includes only one gemcurses session (to do not clutter it fast)
+  if((tls_init_flags & TLS_DEBUGGING) != 0){
+    char debug_path[PATH_MAX + 1];
+    get_file_path_in_data_dir("debug.txt", debug_path, sizeof(debug_path));
+    if(access(debug_path, F_OK) == 0)
+      unlink(debug_path);  
+  }
 
   init_windows();
   init_search_form(false);
@@ -1806,7 +1831,7 @@ int main(int argc, char **argv) {
   refresh_windows();
   init_dialog_panel();
 
-  struct gemini_tls *gem_tls = init_tls(0);
+  struct gemini_tls *gem_tls = init_tls(tls_init_flags);
   if(gem_tls == NULL) 
     exit(EXIT_FAILURE);
 

@@ -168,7 +168,7 @@ void get_cache_path(char *cache_path, int size) {
   char *xdg_cache_home = getenv("XDG_CACHE_HOME");
   if(xdg_cache_home) {
     if(snprintf(cache_path, size, "%s/%s", xdg_cache_home, ".cache/gemcurses") > size)
-      ERROR_LOG_AND_EXIT("XDG_DATA_HOME directory is too long\n");
+      ERROR_LOG_AND_EXIT("XDG_DATA_HOME directory is too long");
     goto create_dir; 
   }
   char *home = getenv("HOME");
@@ -180,7 +180,7 @@ void get_cache_path(char *cache_path, int size) {
   }
 
   if(snprintf(cache_path, size, "%s/%s", home, ".cache/gemcurses") > size)
-    ERROR_LOG_AND_EXIT("HOME directory is too long\n");
+    ERROR_LOG_AND_EXIT("HOME directory is too long");
   
 create_dir:;
   // add a new cache dir if it doesn't exist yes
@@ -196,16 +196,16 @@ void get_data_path(char data_path[], int size) {
   char *xdg_data_home = getenv("XDG_DATA_HOME");
   if(xdg_data_home) {
     if(snprintf(data_path, size, "%s/%s", xdg_data_home, ".local/share/gemcurses") > size)
-      ERROR_LOG_AND_EXIT("XDG_DATA_HOME directory is too long\n");
+      ERROR_LOG_AND_EXIT("XDG_DATA_HOME directory is too long");
     goto create_dir;
   } 
 
   char *home = getenv("HOME");
   if(home == NULL)
-    ERROR_LOG_AND_EXIT("No $HOME environment variable!\n");
+    ERROR_LOG_AND_EXIT("No $HOME environment variable!");
 
   if(snprintf(data_path, size, "%s/%s", home, ".local/share/gemcurses") > size)
-    ERROR_LOG_AND_EXIT("HOME directory is too long\n");
+    ERROR_LOG_AND_EXIT("HOME directory is too long");
 create_dir:;  
   // add a new data dir if it doesn't exist yes
   struct stat st;
@@ -220,7 +220,7 @@ void get_file_path_in_data_dir(const char *filename, char buffer[], int size) {
   get_data_path(data_path, sizeof(data_path));
   bytes_written = snprintf(buffer, size, "%s/%s", data_path, filename);
   if(bytes_written < 0 || bytes_written > size) 
-    ERROR_LOG_AND_EXIT("Path to %s in data dir is too long\n", filename);
+    ERROR_LOG_AND_EXIT("Path to %s in data dir is too long", filename);
 }
 
 void get_file_path_in_cache_dir(const char *filename, char buffer[], int size) {
@@ -229,7 +229,7 @@ void get_file_path_in_cache_dir(const char *filename, char buffer[], int size) {
   get_cache_path(cache_path, sizeof(cache_path));
   bytes_written = snprintf(buffer, size, "%s/%s", cache_path, filename);
   if(bytes_written < 0 || bytes_written > size) 
-    ERROR_LOG_AND_EXIT("Path to %s in cache dir is too long\n", filename);
+    ERROR_LOG_AND_EXIT("Path to %s in cache dir is too long", filename);
 }
 
 int get_downloads_path(char downloads_dir[]) {
@@ -257,7 +257,7 @@ int get_downloads_path(char downloads_dir[]) {
     // Open cache file to read output
     f = fopen(cache_path, "r");
     if(f == NULL)
-      ERROR_LOG_AND_EXIT("Can't open %s for reading\n", cache_path);
+      ERROR_LOG_AND_EXIT("Can't open %s for reading", cache_path);
 
     fseek(f, 0L, SEEK_END);
     int path_length = ftell(f);
@@ -301,7 +301,7 @@ err:
 void write_file(char *buf, char *save_path, int size, int offset) {
   FILE *f = fopen(save_path, "wb");
   if(f == NULL) 
-    ERROR_LOG_AND_EXIT("can't open save_path\n");
+    ERROR_LOG_AND_EXIT("can't open save_path");
   
   fwrite(buf + offset, sizeof(char), size - offset, f);
   fclose(f);
@@ -362,7 +362,7 @@ int save_gemsite(char save_path[PATH_MAX + 1], int buf_size, char *url, struct r
   if(strncmp(url, "gemini://", 9) == 0) url += 9;
 
   if((ssize_t)strlen(data_path) + (ssize_t)strlen(url) >= buf_size) {
-    ERROR_LOG("Url (%s) and data_path (%s) are longer than PATH_MAX\n", url, data_path);
+    ERROR_LOG("Url (%s) and data_path (%s) are longer than PATH_MAX", url, data_path);
     return 0;
   }
 
@@ -422,7 +422,7 @@ int save_gemsite(char save_path[PATH_MAX + 1], int buf_size, char *url, struct r
   strcat(save_path, timestamp);
 
   write_file(resp->body, save_path, resp->body_size, 0);
-  INFO_LOG("saved gemsite: %s\n", save_path);
+  INFO_LOG("saved gemsite: %s", save_path);
 
   return 1;
 }
